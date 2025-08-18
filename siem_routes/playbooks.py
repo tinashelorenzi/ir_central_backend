@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, noload
 from sqlalchemy import and_, or_, desc, func
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -43,9 +43,9 @@ async def create_playbook(
             detail="A playbook with this name already exists"
         )
     
-    # Create new playbook
+    # Create new playbook - use model_dump() for Pydantic v2
     playbook = IRPlaybook(
-        **playbook_data.dict(),
+        **playbook_data.model_dump(),
         created_by_id=current_user.id
     )
     
@@ -53,7 +53,10 @@ async def create_playbook(
     db.commit()
     db.refresh(playbook)
     
-    return PlaybookResponse.from_orm(playbook)
+    # Set created_by to None to avoid serialization issues
+    playbook.created_by = None
+    
+    return PlaybookResponse.model_validate(playbook)
 
 @router.get("/", response_model=PaginatedResponse)
 async def list_playbooks(
@@ -70,7 +73,8 @@ async def list_playbooks(
 ):
     """List playbooks with filtering and pagination"""
     
-    query = db.query(IRPlaybook)
+    # Use noload to avoid loading the created_by relationship
+    query = db.query(IRPlaybook).options(noload(IRPlaybook.created_by))
     
     # Apply filters
     if search:
@@ -107,8 +111,8 @@ async def list_playbooks(
     # Apply pagination and ordering
     playbooks = query.order_by(desc(IRPlaybook.updated_at)).offset((page - 1) * size).limit(size).all()
     
-    # Convert SQLAlchemy objects to Pydantic models
-    playbook_responses = [PlaybookResponse.from_orm(playbook) for playbook in playbooks]
+    # Convert SQLAlchemy objects to Pydantic models - relationships are already not loaded
+    playbook_responses = [PlaybookResponse.model_validate(playbook) for playbook in playbooks]
     
     return PaginatedResponse(
         items=playbook_responses,
@@ -126,14 +130,14 @@ async def get_playbook(
 ):
     """Get a specific playbook by ID"""
     
-    playbook = db.query(IRPlaybook).filter(IRPlaybook.id == playbook_id).first()
+    playbook = db.query(IRPlaybook).options(noload(IRPlaybook.created_by)).filter(IRPlaybook.id == playbook_id).first()
     if not playbook:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Playbook not found"
         )
     
-    return PlaybookResponse.from_orm(playbook)
+    return PlaybookResponse.model_validate(playbook)
 
 @router.put("/{playbook_id}", response_model=PlaybookResponse)
 async def update_playbook(
@@ -165,8 +169,8 @@ async def update_playbook(
                 detail="A playbook with this name already exists"
             )
     
-    # Update fields
-    update_data = playbook_data.dict(exclude_unset=True)
+    # Update fields - use model_dump() for Pydantic v2
+    update_data = playbook_data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(playbook, field, value)
     
@@ -175,7 +179,10 @@ async def update_playbook(
     db.commit()
     db.refresh(playbook)
     
-    return PlaybookResponse.from_orm(playbook)
+    # Set created_by to None to avoid serialization issues
+    playbook.created_by = None
+    
+    return PlaybookResponse.model_validate(playbook)
 
 @router.delete("/{playbook_id}", response_model=MessageResponse)
 async def delete_playbook(
