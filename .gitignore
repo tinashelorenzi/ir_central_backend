@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / compiled files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Editor/OS specific files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Environment variables
+.env
+.env.*
+.flaskenv
+
+# Database files
+*.sqlite3
+*.db
+
+# Log files
+*.log
