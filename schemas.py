@@ -1,7 +1,8 @@
-from pydantic import BaseModel, EmailStr, validator
-from typing import Optional, Dict, Any
+from pydantic import BaseModel, EmailStr, validator, Field
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from models.users import UserRole
+from models.playbook import PlaybookStatus, StepType, InputFieldType
 
 # Authentication schemas
 class Token(BaseModel):
@@ -198,3 +199,195 @@ class HealthCheck(BaseModel):
     timestamp: datetime
     version: str = "1.0.0"
     database: str = "connected"
+
+# Playbook schemas
+class PlaybookBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    version: str = "1.0"
+    status: PlaybookStatus = PlaybookStatus.DRAFT
+    tags: List[str] = Field(default_factory=list)
+    severity_levels: List[str] = Field(default_factory=list)
+    alert_sources: List[str] = Field(default_factory=list)
+    matching_criteria: Dict[str, Any] = Field(default_factory=dict)
+    playbook_definition: Dict[str, Any]
+    report_template: Optional[str] = None
+    estimated_duration_minutes: int = 60
+    requires_approval: bool = False
+    auto_assign: bool = True
+    priority_score: int = Field(default=5, ge=1, le=10)
+
+class PlaybookCreate(PlaybookBase):
+    pass
+
+class PlaybookUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    version: Optional[str] = None
+    status: Optional[PlaybookStatus] = None
+    tags: Optional[List[str]] = None
+    severity_levels: Optional[List[str]] = None
+    alert_sources: Optional[List[str]] = None
+    matching_criteria: Optional[Dict[str, Any]] = None
+    playbook_definition: Optional[Dict[str, Any]] = None
+    report_template: Optional[str] = None
+    estimated_duration_minutes: Optional[int] = None
+    requires_approval: Optional[bool] = None
+    auto_assign: Optional[bool] = None
+    priority_score: Optional[int] = Field(None, ge=1, le=10)
+
+class PlaybookResponse(PlaybookBase):
+    id: int
+    created_by_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+    last_used: Optional[datetime] = None
+    usage_count: int = 0
+    created_by: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        from_attributes = True
+
+class PlaybookExecutionBase(BaseModel):
+    playbook_id: int
+    alert_id: Optional[int] = None
+    incident_id: Optional[str] = None
+    assigned_analyst_id: Optional[int] = None
+
+class PlaybookExecutionCreate(PlaybookExecutionBase):
+    pass
+
+class PlaybookExecutionUpdate(BaseModel):
+    current_phase: Optional[str] = None
+    current_step_index: Optional[int] = None
+    execution_status: Optional[str] = None
+    execution_data: Optional[Dict[str, Any]] = None
+    completed_steps: Optional[int] = None
+    progress_percentage: Optional[float] = None
+    completed_at: Optional[datetime] = None
+    paused_at: Optional[datetime] = None
+    generated_report: Optional[str] = None
+    report_generated_at: Optional[datetime] = None
+
+class PlaybookExecutionResponse(PlaybookExecutionBase):
+    id: int
+    execution_id: str
+    current_phase: Optional[str] = None
+    current_step_index: int = 0
+    execution_status: str = "in_progress"
+    execution_data: Dict[str, Any] = Field(default_factory=dict)
+    total_steps: Optional[int] = None
+    completed_steps: int = 0
+    progress_percentage: float = 0.0
+    assigned_at: datetime
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    paused_at: Optional[datetime] = None
+    generated_report: Optional[str] = None
+    report_generated_at: Optional[datetime] = None
+    playbook: Optional[Dict[str, Any]] = None
+    assigned_analyst: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        from_attributes = True
+
+class StepExecutionLogBase(BaseModel):
+    execution_id: int
+    phase_name: str
+    step_name: str
+    step_type: str
+    step_index: int
+    status: str = "pending"
+    success: Optional[bool] = None
+    output_data: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    requires_manual_action: bool = False
+    automation_command: Optional[str] = None
+    automation_result: Optional[Dict[str, Any]] = None
+
+class StepExecutionLogCreate(StepExecutionLogBase):
+    pass
+
+class StepExecutionLogResponse(StepExecutionLogBase):
+    id: int
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    executed_by_id: Optional[int] = None
+    executed_by: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        from_attributes = True
+
+class PlaybookUserInputBase(BaseModel):
+    execution_id: int
+    phase_name: str
+    step_name: str
+    field_name: str
+    field_type: str
+    user_input: Dict[str, Any]
+    input_label: str
+    is_required: bool = False
+
+class PlaybookUserInputCreate(PlaybookUserInputBase):
+    pass
+
+class PlaybookUserInputResponse(PlaybookUserInputBase):
+    id: int
+    collected_by_id: int
+    collected_by: Optional[Dict[str, Any]] = None
+    collected_at: datetime
+    is_valid: bool = True
+    validation_error: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+class PlaybookTemplateBase(BaseModel):
+    name: str
+    category: str
+    description: Optional[str] = None
+    template_definition: Dict[str, Any]
+    default_tags: List[str] = Field(default_factory=list)
+    is_official: bool = False
+
+class PlaybookTemplateCreate(PlaybookTemplateBase):
+    pass
+
+class PlaybookTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    template_definition: Optional[Dict[str, Any]] = None
+    default_tags: Optional[List[str]] = None
+    is_official: Optional[bool] = None
+
+class PlaybookTemplateResponse(PlaybookTemplateBase):
+    id: int
+    download_count: int = 0
+    rating: Optional[float] = None
+    created_by_id: Optional[int] = None
+    created_at: datetime
+    created_by: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        from_attributes = True
+
+class PlaybookSearchRequest(BaseModel):
+    search: Optional[str] = None
+    status: Optional[PlaybookStatus] = None
+    tags: Optional[List[str]] = None
+    severity_levels: Optional[List[str]] = None
+    alert_sources: Optional[List[str]] = None
+    created_by_id: Optional[int] = None
+    page: int = 1
+    size: int = 20
+
+class PlaybookExecutionSearchRequest(BaseModel):
+    playbook_id: Optional[int] = None
+    execution_status: Optional[str] = None
+    assigned_analyst_id: Optional[int] = None
+    incident_id: Optional[str] = None
+    started_after: Optional[datetime] = None
+    started_before: Optional[datetime] = None
+    page: int = 1
+    size: int = 20

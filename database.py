@@ -14,6 +14,13 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
+# Import all models to ensure they are registered with SQLAlchemy
+from models.users import User, UserManager, UserSession, LoginAttempt
+from models.playbook import (
+    IRPlaybook, PlaybookExecution, StepExecutionLog, 
+    PlaybookUserInput, PlaybookTemplate, PlaybookStatus, StepType, InputFieldType
+)
+
 # Dependency to get database session
 def get_db():
     db = SessionLocal()
