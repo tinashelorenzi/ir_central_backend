@@ -250,7 +250,6 @@ class PlaybookResponse(PlaybookBase):
 
 class PlaybookExecutionBase(BaseModel):
     playbook_id: int
-    alert_id: Optional[int] = None
     incident_id: Optional[str] = None
     assigned_analyst_id: Optional[int] = None
 
@@ -258,33 +257,34 @@ class PlaybookExecutionCreate(PlaybookExecutionBase):
     pass
 
 class PlaybookExecutionUpdate(BaseModel):
+    status: Optional[str] = None
     current_phase: Optional[str] = None
-    current_step_index: Optional[int] = None
-    execution_status: Optional[str] = None
-    execution_data: Optional[Dict[str, Any]] = None
+    current_step: Optional[str] = None
     completed_steps: Optional[int] = None
-    progress_percentage: Optional[float] = None
+    failed_steps: Optional[int] = None
+    skipped_steps: Optional[int] = None
     completed_at: Optional[datetime] = None
-    paused_at: Optional[datetime] = None
-    generated_report: Optional[str] = None
-    report_generated_at: Optional[datetime] = None
+    estimated_completion: Optional[datetime] = None
+    final_status: Optional[str] = None
+    final_report: Optional[str] = None
+    execution_context: Optional[Dict[str, Any]] = None
 
 class PlaybookExecutionResponse(PlaybookExecutionBase):
     id: int
     execution_id: str
+    status: str = "pending"
     current_phase: Optional[str] = None
-    current_step_index: int = 0
-    execution_status: str = "in_progress"
-    execution_data: Dict[str, Any] = Field(default_factory=dict)
-    total_steps: Optional[int] = None
+    current_step: Optional[str] = None
+    total_steps: int = 0
     completed_steps: int = 0
-    progress_percentage: float = 0.0
-    assigned_at: datetime
+    failed_steps: int = 0
+    skipped_steps: int = 0
     started_at: datetime
     completed_at: Optional[datetime] = None
-    paused_at: Optional[datetime] = None
-    generated_report: Optional[str] = None
-    report_generated_at: Optional[datetime] = None
+    estimated_completion: Optional[datetime] = None
+    final_status: Optional[str] = None
+    final_report: Optional[str] = None
+    execution_context: Dict[str, Any] = Field(default_factory=dict)
     playbook: Optional[Dict[str, Any]] = None
     assigned_analyst: Optional[Dict[str, Any]] = None
     
@@ -348,7 +348,7 @@ class PlaybookTemplateBase(BaseModel):
     description: Optional[str] = None
     template_definition: Dict[str, Any]
     default_tags: List[str] = Field(default_factory=list)
-    is_official: bool = False
+    default_severity_levels: List[str] = Field(default_factory=list)
 
 class PlaybookTemplateCreate(PlaybookTemplateBase):
     pass
@@ -359,14 +359,14 @@ class PlaybookTemplateUpdate(BaseModel):
     description: Optional[str] = None
     template_definition: Optional[Dict[str, Any]] = None
     default_tags: Optional[List[str]] = None
-    is_official: Optional[bool] = None
+    default_severity_levels: Optional[List[str]] = None
 
 class PlaybookTemplateResponse(PlaybookTemplateBase):
     id: int
-    download_count: int = 0
-    rating: Optional[float] = None
+    usage_count: int = 0
     created_by_id: Optional[int] = None
     created_at: datetime
+    updated_at: datetime
     created_by: Optional[Dict[str, Any]] = None
     
     class Config:
@@ -384,7 +384,7 @@ class PlaybookSearchRequest(BaseModel):
 
 class PlaybookExecutionSearchRequest(BaseModel):
     playbook_id: Optional[int] = None
-    execution_status: Optional[str] = None
+    status: Optional[str] = None
     assigned_analyst_id: Optional[int] = None
     incident_id: Optional[str] = None
     started_after: Optional[datetime] = None

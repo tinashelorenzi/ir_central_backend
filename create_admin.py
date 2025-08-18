@@ -11,8 +11,8 @@ from sqlalchemy.orm import Session
 # Add the current directory to Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from database import SessionLocal, engine
-from models.users import Base, User, UserManager, UserRole
+from database import SessionLocal, engine, Base
+from models.users import User, UserManager, UserRole
 from config import settings
 
 def create_admin_user():

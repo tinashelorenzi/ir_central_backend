@@ -53,14 +53,7 @@ async def create_playbook(
     db.commit()
     db.refresh(playbook)
     
-    # Add created_by info
-    playbook.created_by = {
-        "id": current_user.id,
-        "username": current_user.username,
-        "full_name": current_user.full_name
-    }
-    
-    return playbook
+    return PlaybookResponse.from_orm(playbook)
 
 @router.get("/", response_model=PaginatedResponse)
 async def list_playbooks(
@@ -114,17 +107,11 @@ async def list_playbooks(
     # Apply pagination and ordering
     playbooks = query.order_by(desc(IRPlaybook.updated_at)).offset((page - 1) * size).limit(size).all()
     
-    # Add created_by info
-    for playbook in playbooks:
-        if playbook.created_by:
-            playbook.created_by = {
-                "id": playbook.created_by.id,
-                "username": playbook.created_by.username,
-                "full_name": playbook.created_by.full_name
-            }
+    # Convert SQLAlchemy objects to Pydantic models
+    playbook_responses = [PlaybookResponse.from_orm(playbook) for playbook in playbooks]
     
     return PaginatedResponse(
-        items=playbooks,
+        items=playbook_responses,
         total=total,
         page=page,
         size=size,
@@ -146,15 +133,7 @@ async def get_playbook(
             detail="Playbook not found"
         )
     
-    # Add created_by info
-    if playbook.created_by:
-        playbook.created_by = {
-            "id": playbook.created_by.id,
-            "username": playbook.created_by.username,
-            "full_name": playbook.created_by.full_name
-        }
-    
-    return playbook
+    return PlaybookResponse.from_orm(playbook)
 
 @router.put("/{playbook_id}", response_model=PlaybookResponse)
 async def update_playbook(
@@ -196,15 +175,7 @@ async def update_playbook(
     db.commit()
     db.refresh(playbook)
     
-    # Add created_by info
-    if playbook.created_by:
-        playbook.created_by = {
-            "id": playbook.created_by.id,
-            "username": playbook.created_by.username,
-            "full_name": playbook.created_by.full_name
-        }
-    
-    return playbook
+    return PlaybookResponse.from_orm(playbook)
 
 @router.delete("/{playbook_id}", response_model=MessageResponse)
 async def delete_playbook(
@@ -278,11 +249,10 @@ async def create_execution(
     execution = PlaybookExecution(
         execution_id=execution_id,
         playbook_id=execution_data.playbook_id,
-        alert_id=execution_data.alert_id,
         incident_id=execution_data.incident_id,
         assigned_analyst_id=execution_data.assigned_analyst_id or current_user.id,
         total_steps=total_steps,
-        execution_data={
+        execution_context={
             "phases": {},
             "user_inputs": {},
             "artifacts_collected": []
@@ -298,22 +268,7 @@ async def create_execution(
     playbook.last_used = datetime.utcnow()
     db.commit()
     
-    # Add related data
-    execution.playbook = {
-        "id": playbook.id,
-        "name": playbook.name,
-        "version": playbook.version,
-        "description": playbook.description
-    }
-    
-    if execution.assigned_analyst:
-        execution.assigned_analyst = {
-            "id": execution.assigned_analyst.id,
-            "username": execution.assigned_analyst.username,
-            "full_name": execution.assigned_analyst.full_name
-        }
-    
-    return execution
+    return PlaybookExecutionResponse.from_orm(execution)
 
 @router.get("/executions", response_model=PaginatedResponse)
 async def list_executions(
@@ -337,7 +292,7 @@ async def list_executions(
         query = query.filter(PlaybookExecution.playbook_id == playbook_id)
     
     if execution_status:
-        query = query.filter(PlaybookExecution.execution_status == execution_status)
+        query = query.filter(PlaybookExecution.status == execution_status)
     
     if assigned_analyst_id:
         query = query.filter(PlaybookExecution.assigned_analyst_id == assigned_analyst_id)
@@ -357,25 +312,11 @@ async def list_executions(
     # Apply pagination and ordering
     executions = query.order_by(desc(PlaybookExecution.started_at)).offset((page - 1) * size).limit(size).all()
     
-    # Add related data
-    for execution in executions:
-        if execution.playbook:
-            execution.playbook = {
-                "id": execution.playbook.id,
-                "name": execution.playbook.name,
-                "version": execution.playbook.version,
-                "description": execution.playbook.description
-            }
-        
-        if execution.assigned_analyst:
-            execution.assigned_analyst = {
-                "id": execution.assigned_analyst.id,
-                "username": execution.assigned_analyst.username,
-                "full_name": execution.assigned_analyst.full_name
-            }
+    # Convert SQLAlchemy objects to Pydantic models
+    execution_responses = [PlaybookExecutionResponse.from_orm(execution) for execution in executions]
     
     return PaginatedResponse(
-        items=executions,
+        items=execution_responses,
         total=total,
         page=page,
         size=size,
@@ -397,23 +338,7 @@ async def get_execution(
             detail="Execution not found"
         )
     
-    # Add related data
-    if execution.playbook:
-        execution.playbook = {
-            "id": execution.playbook.id,
-            "name": execution.playbook.name,
-            "version": execution.playbook.version,
-            "description": execution.playbook.description
-        }
-    
-    if execution.assigned_analyst:
-        execution.assigned_analyst = {
-            "id": execution.assigned_analyst.id,
-            "username": execution.assigned_analyst.username,
-            "full_name": execution.assigned_analyst.full_name
-        }
-    
-    return execution
+    return PlaybookExecutionResponse.from_orm(execution)
 
 @router.put("/executions/{execution_id}", response_model=PlaybookExecutionResponse)
 async def update_execution(
@@ -436,38 +361,14 @@ async def update_execution(
     for field, value in update_data.items():
         setattr(execution, field, value)
     
-    # Update progress percentage if steps are updated
-    if execution.total_steps and execution.completed_steps is not None:
-        execution.progress_percentage = (execution.completed_steps / execution.total_steps) * 100
-    
     # Set completion time if status is completed
-    if execution_data.execution_status == "completed" and not execution.completed_at:
+    if execution_data.status == "completed" and not execution.completed_at:
         execution.completed_at = datetime.utcnow()
-    
-    # Set report generation time if report is generated
-    if execution_data.generated_report and not execution.report_generated_at:
-        execution.report_generated_at = datetime.utcnow()
     
     db.commit()
     db.refresh(execution)
     
-    # Add related data
-    if execution.playbook:
-        execution.playbook = {
-            "id": execution.playbook.id,
-            "name": execution.playbook.name,
-            "version": execution.playbook.version,
-            "description": execution.playbook.description
-        }
-    
-    if execution.assigned_analyst:
-        execution.assigned_analyst = {
-            "id": execution.assigned_analyst.id,
-            "username": execution.assigned_analyst.username,
-            "full_name": execution.assigned_analyst.full_name
-        }
-    
-    return execution
+    return PlaybookExecutionResponse.from_orm(execution)
 
 # ============================================================================
 # STEP EXECUTION LOGS
@@ -501,14 +402,7 @@ async def create_step_log(
     db.commit()
     db.refresh(step_log)
     
-    # Add executed_by info
-    step_log.executed_by = {
-        "id": current_user.id,
-        "username": current_user.username,
-        "full_name": current_user.full_name
-    }
-    
-    return step_log
+    return StepExecutionLogResponse.from_orm(step_log)
 
 @router.get("/executions/{execution_id}/steps", response_model=List[StepExecutionLogResponse])
 async def list_step_logs(
@@ -530,16 +424,8 @@ async def list_step_logs(
         StepExecutionLog.execution_id == execution_id
     ).order_by(StepExecutionLog.step_index).all()
     
-    # Add executed_by info
-    for step_log in step_logs:
-        if step_log.executed_by:
-            step_log.executed_by = {
-                "id": step_log.executed_by.id,
-                "username": step_log.executed_by.username,
-                "full_name": step_log.executed_by.full_name
-            }
-    
-    return step_logs
+    # Convert SQLAlchemy objects to Pydantic models
+    return [StepExecutionLogResponse.from_orm(step_log) for step_log in step_logs]
 
 # ============================================================================
 # USER INPUTS
@@ -573,14 +459,7 @@ async def create_user_input(
     db.commit()
     db.refresh(user_input)
     
-    # Add collected_by info
-    user_input.collected_by = {
-        "id": current_user.id,
-        "username": current_user.username,
-        "full_name": current_user.full_name
-    }
-    
-    return user_input
+    return PlaybookUserInputResponse.from_orm(user_input)
 
 @router.get("/executions/{execution_id}/inputs", response_model=List[PlaybookUserInputResponse])
 async def list_user_inputs(
@@ -602,16 +481,8 @@ async def list_user_inputs(
         PlaybookUserInput.execution_id == execution_id
     ).order_by(PlaybookUserInput.collected_at).all()
     
-    # Add collected_by info
-    for user_input in user_inputs:
-        if user_input.collected_by:
-            user_input.collected_by = {
-                "id": user_input.collected_by.id,
-                "username": user_input.collected_by.username,
-                "full_name": user_input.collected_by.full_name
-            }
-    
-    return user_inputs
+    # Convert SQLAlchemy objects to Pydantic models
+    return [PlaybookUserInputResponse.from_orm(user_input) for user_input in user_inputs]
 
 # ============================================================================
 # PLAYBOOK TEMPLATES
@@ -643,19 +514,11 @@ async def create_template(
     db.commit()
     db.refresh(template)
     
-    # Add created_by info
-    template.created_by = {
-        "id": current_user.id,
-        "username": current_user.username,
-        "full_name": current_user.full_name
-    }
-    
-    return template
+    return PlaybookTemplateResponse.from_orm(template)
 
 @router.get("/templates", response_model=PaginatedResponse)
 async def list_templates(
     category: Optional[str] = Query(None, description="Filter by category"),
-    is_official: Optional[bool] = Query(None, description="Filter by official status"),
     search: Optional[str] = Query(None, description="Search in name and description"),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(20, ge=1, le=100, description="Items per page"),
@@ -670,9 +533,6 @@ async def list_templates(
     if category:
         query = query.filter(PlaybookTemplate.category == category)
     
-    if is_official is not None:
-        query = query.filter(PlaybookTemplate.is_official == is_official)
-    
     if search:
         search_filter = or_(
             PlaybookTemplate.name.ilike(f"%{search}%"),
@@ -684,19 +544,13 @@ async def list_templates(
     total = query.count()
     
     # Apply pagination and ordering
-    templates = query.order_by(desc(PlaybookTemplate.download_count)).offset((page - 1) * size).limit(size).all()
+    templates = query.order_by(desc(PlaybookTemplate.usage_count)).offset((page - 1) * size).limit(size).all()
     
-    # Add created_by info
-    for template in templates:
-        if template.created_by:
-            template.created_by = {
-                "id": template.created_by.id,
-                "username": template.created_by.username,
-                "full_name": template.created_by.full_name
-            }
+    # Convert SQLAlchemy objects to Pydantic models
+    template_responses = [PlaybookTemplateResponse.from_orm(template) for template in templates]
     
     return PaginatedResponse(
-        items=templates,
+        items=template_responses,
         total=total,
         page=page,
         size=size,
@@ -718,19 +572,11 @@ async def get_template(
             detail="Template not found"
         )
     
-    # Increment download count
-    template.download_count += 1
+    # Increment usage count
+    template.usage_count += 1
     db.commit()
     
-    # Add created_by info
-    if template.created_by:
-        template.created_by = {
-            "id": template.created_by.id,
-            "username": template.created_by.username,
-            "full_name": template.created_by.full_name
-        }
-    
-    return template
+    return PlaybookTemplateResponse.from_orm(template)
 
 @router.put("/templates/{template_id}", response_model=PlaybookTemplateResponse)
 async def update_template(
@@ -770,15 +616,7 @@ async def update_template(
     db.commit()
     db.refresh(template)
     
-    # Add created_by info
-    if template.created_by:
-        template.created_by = {
-            "id": template.created_by.id,
-            "username": template.created_by.username,
-            "full_name": template.created_by.full_name
-        }
-    
-    return template
+    return PlaybookTemplateResponse.from_orm(template)
 
 @router.delete("/templates/{template_id}", response_model=MessageResponse)
 async def delete_template(
@@ -866,11 +704,4 @@ async def create_playbook_from_template(
     db.commit()
     db.refresh(playbook)
     
-    # Add created_by info
-    playbook.created_by = {
-        "id": current_user.id,
-        "username": current_user.username,
-        "full_name": current_user.full_name
-    }
-    
-    return playbook
+    return PlaybookResponse.from_orm(playbook)

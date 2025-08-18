@@ -1,11 +1,11 @@
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, JSON
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from passlib.context import CryptContext
 import enum
 
-Base = declarative_base()
+# Import Base from database.py to avoid circular imports
+from database import Base
 
 class UserRole(str, enum.Enum):
     """User roles for IR platform access control"""

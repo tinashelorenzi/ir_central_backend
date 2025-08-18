@@ -1,14 +1,14 @@
 from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, ForeignKey, JSON, Float
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
 from typing import Dict, List, Any, Optional
 
-Base = declarative_base()
+# Import Base from database.py instead of creating a new one
+from database import Base
 
-# Import User model for relationships
-from models.users import User
+# Remove this import - it causes circular import issues
+# from models.users import User
 
 class PlaybookStatus(str, enum.Enum):
     DRAFT = "draft"
@@ -90,8 +90,8 @@ class IRPlaybook(Base):
     last_used = Column(DateTime, nullable=True)
     usage_count = Column(Integer, default=0)
     
-    # Relationships
-    created_by = relationship("User")
+    # Relationships - Use string references to avoid circular imports
+    created_by = relationship("User", foreign_keys=[created_by_id])
     executions = relationship("PlaybookExecution", back_populates="playbook")
     
     def __repr__(self):
@@ -106,64 +106,37 @@ class PlaybookExecution(Base):
     
     # References
     playbook_id = Column(Integer, ForeignKey("ir_playbooks.id"))
-    alert_id = Column(Integer, ForeignKey("alerts.id"))
-    incident_id = Column(String(50))  # Links to main incident
-    
-    # Execution state
-    current_phase = Column(String(100))  # Which phase we're currently in
-    current_step_index = Column(Integer, default=0)
-    execution_status = Column(String(20), default="in_progress")  # in_progress, completed, failed, paused
-    
-    # Dynamic execution data - this grows as playbook runs
-    execution_data = Column(JSON, default=dict)
-    # Example structure:
-    # {
-    #   "phases": {
-    #     "containment": {
-    #       "status": "completed",
-    #       "steps": {
-    #         "isolate_host": {"status": "completed", "output": "Host isolated successfully"},
-    #         "collect_memory": {"status": "completed", "file_path": "/artifacts/memory_dump.mem"}
-    #       }
-    #     },
-    #     "analysis": {
-    #       "status": "in_progress",
-    #       "steps": {
-    #         "analyze_malware": {"status": "pending"}
-    #       }
-    #     }
-    #   },
-    #   "user_inputs": {
-    #     "affected_systems": ["SERVER-01", "WORKSTATION-05"],
-    #     "business_impact": "High - production database affected"
-    #   },
-    #   "artifacts_collected": [
-    #     {"type": "memory_dump", "path": "/artifacts/memory_001.mem", "hash": "sha256..."},
-    #     {"type": "network_capture", "path": "/artifacts/traffic.pcap", "size": 1024000}
-    #   ]
-    # }
-    
-    # Progress tracking
-    total_steps = Column(Integer)
-    completed_steps = Column(Integer, default=0)
-    progress_percentage = Column(Float, default=0.0)
+    incident_id = Column(String(50), nullable=True)  # Link to incident system
     
     # Assignment
     assigned_analyst_id = Column(Integer, ForeignKey("users.id"))
-    assigned_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Execution status
+    status = Column(String(20), default="pending")  # pending, in_progress, completed, failed, cancelled
+    current_phase = Column(String(100), nullable=True)
+    current_step = Column(String(100), nullable=True)
+    
+    # Progress tracking
+    total_steps = Column(Integer, default=0)
+    completed_steps = Column(Integer, default=0)
+    failed_steps = Column(Integer, default=0)
+    skipped_steps = Column(Integer, default=0)
     
     # Timing
     started_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
-    paused_at = Column(DateTime, nullable=True)
+    estimated_completion = Column(DateTime, nullable=True)
     
-    # Final report
-    generated_report = Column(Text, nullable=True)  # Final markdown report
-    report_generated_at = Column(DateTime, nullable=True)
+    # Results
+    final_status = Column(String(50), nullable=True)  # success, partial_success, failure
+    final_report = Column(Text, nullable=True)  # Generated markdown report
+    
+    # Execution context
+    execution_context = Column(JSON, default=dict)  # Variables and state during execution
     
     # Relationships
     playbook = relationship("IRPlaybook", back_populates="executions")
-    assigned_analyst = relationship("User")
+    assigned_analyst = relationship("User", foreign_keys=[assigned_analyst_id])
     step_logs = relationship("StepExecutionLog", back_populates="execution")
     user_inputs = relationship("PlaybookUserInput", back_populates="execution")
 
@@ -194,7 +167,7 @@ class StepExecutionLog(Base):
     
     # User interaction
     executed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    executed_by = relationship("User")
+    executed_by = relationship("User", foreign_keys=[executed_by_id])
     requires_manual_action = Column(Boolean, default=False)
     
     # Automation details
@@ -223,7 +196,7 @@ class PlaybookUserInput(Base):
     
     # Metadata
     collected_by_id = Column(Integer, ForeignKey("users.id"))
-    collected_by = relationship("User")
+    collected_by = relationship("User", foreign_keys=[collected_by_id])
     collected_at = Column(DateTime, default=datetime.utcnow)
     
     # Validation
@@ -240,164 +213,18 @@ class PlaybookTemplate(Base):
     category = Column(String(100))  # malware_response, data_breach, phishing, etc.
     description = Column(Text)
     
-    # Template structure - basis for creating new playbooks
-    template_definition = Column(JSON, nullable=False)
+    # Template structure
+    template_definition = Column(JSON)  # Base playbook structure to copy
     default_tags = Column(JSON, default=list)
+    default_severity_levels = Column(JSON, default=list)
     
-    # Template metadata
-    is_official = Column(Boolean, default=False)  # Official vs user-created
-    download_count = Column(Integer, default=0)
-    rating = Column(Float, nullable=True)  # 1.0-5.0 user rating
+    # Usage tracking
+    usage_count = Column(Integer, default=0)
     
+    # Metadata
     created_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
-
-# Example playbook JSON structure for reference:
-EXAMPLE_PLAYBOOK_STRUCTURE = {
-    "metadata": {
-        "name": "Malware Infection Response",
-        "description": "Standard response for confirmed malware infections",
-        "version": "2.1",
-        "estimated_duration": 120
-    },
-    "phases": [
-        {
-            "name": "initial_assessment",
-            "title": "Initial Assessment",
-            "description": "Gather initial information about the incident",
-            "steps": [
-                {
-                    "name": "collect_basic_info",
-                    "title": "Collect Basic Information",
-                    "type": "user_input",
-                    "description": "Gather essential details about the incident",
-                    "required": True,
-                    "inputs": [
-                        {
-                            "name": "affected_systems",
-                            "label": "List affected systems (hostnames/IPs)",
-                            "type": "textarea",
-                            "required": True,
-                            "placeholder": "SERVER-01, WORKSTATION-05, 192.168.1.100"
-                        },
-                        {
-                            "name": "business_impact",
-                            "label": "Business Impact Assessment",
-                            "type": "select",
-                            "options": ["Low", "Medium", "High", "Critical"],
-                            "required": True
-                        },
-                        {
-                            "name": "incident_time",
-                            "label": "When was the incident first detected?",
-                            "type": "datetime",
-                            "required": True
-                        }
-                    ]
-                }
-            ]
-        },
-        {
-            "name": "containment",
-            "title": "Containment",
-            "description": "Isolate and contain the threat",
-            "steps": [
-                {
-                    "name": "isolate_systems",
-                    "title": "Isolate Affected Systems",
-                    "type": "manual_action",
-                    "description": "Network isolate all affected systems to prevent spread",
-                    "instructions": "Use network ACLs or physically disconnect systems",
-                    "requires_approval": True,
-                    "estimated_minutes": 15
-                },
-                {
-                    "name": "collect_memory_dump",
-                    "title": "Collect Memory Dump",
-                    "type": "artifact_collection",
-                    "description": "Capture memory dump from primary affected system",
-                    "automation": {
-                        "tool": "winpmem",
-                        "command": "winpmem.exe -o {output_path}",
-                        "output_path": "/artifacts/memory_{timestamp}.mem"
-                    }
-                }
-            ]
-        },
-        {
-            "name": "analysis",
-            "title": "Analysis",
-            "description": "Analyze collected evidence",
-            "steps": [
-                {
-                    "name": "malware_analysis", 
-                    "title": "Analyze Malware Sample",
-                    "type": "analysis",
-                    "description": "Run YARA rules and analyze collected artifacts",
-                    "inputs": [
-                        {
-                            "name": "analysis_findings",
-                            "label": "Analysis Results",
-                            "type": "textarea",
-                            "required": True,
-                            "placeholder": "Describe malware family, IOCs, TTPs observed..."
-                        }
-                    ]
-                }
-            ]
-        },
-        {
-            "name": "recovery",
-            "title": "Recovery",
-            "description": "Restore systems and implement improvements",
-            "steps": [
-                {
-                    "name": "system_restoration",
-                    "title": "System Restoration Plan",
-                    "type": "user_input",
-                    "inputs": [
-                        {
-                            "name": "restoration_steps",
-                            "label": "Describe restoration steps taken",
-                            "type": "textarea",
-                            "required": True
-                        },
-                        {
-                            "name": "preventive_measures",
-                            "label": "Preventive measures implemented",
-                            "type": "textarea",
-                            "required": True
-                        }
-                    ]
-                }
-            ]
-        }
-    ],
-    "report_template": """
-# Malware Incident Response Report
-
-## Incident Overview
-- **Incident ID**: {incident_id}
-- **Detection Time**: {user_inputs.incident_time}
-- **Business Impact**: {user_inputs.business_impact}
-- **Affected Systems**: {user_inputs.affected_systems}
-
-## Response Timeline
-{execution_timeline}
-
-## Analysis Results
-{user_inputs.analysis_findings}
-
-## Recovery Actions
-{user_inputs.restoration_steps}
-
-## Preventive Measures
-{user_inputs.preventive_measures}
-
-## Artifacts Collected
-{artifacts_list}
-
-## Lessons Learned
-{lessons_learned}
-"""
-}
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    created_by = relationship("User", foreign_keys=[created_by_id])
