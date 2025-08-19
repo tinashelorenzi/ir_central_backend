@@ -8,6 +8,7 @@ from datetime import datetime
 from database import engine, get_db, Base
 from siem_routes.auth import router as auth_router
 from siem_routes.playbooks import router as playbook_router
+from routes.alert import router as alert_router
 from schemas import HealthCheck, ErrorResponse
 
 # Create database tables
@@ -85,6 +86,7 @@ async def root():
 # Include routers
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(playbook_router, prefix="/api/v1")
+app.include_router(alert_router, prefix="/api/v1")
 
 if __name__ == "__main__":
     import uvicorn
