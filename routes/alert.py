@@ -1,17 +1,21 @@
-# routes/alerts.py
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Request, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, or_, desc, asc, func, text
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 import uuid
 import logging
+import json
+from functools import wraps
 
 from database import get_db
 from auth_utils import get_current_user, require_role
 from models.users import User
 from models.alert import Alert, AlertSeverity, AlertStatus, AlertSource, ThreatType
+from models.endpoint_tokens import EndpointToken
 from schemas import (
     AlertCreate, AlertUpdate, AlertResponse, AlertSearchRequest,
     SiemAlertIngestion, SiemIngestionResponse, AlertStatsResponse,
@@ -25,19 +29,221 @@ logger = logging.getLogger(__name__)
 # Create router
 router = APIRouter(prefix="/api/v1/alerts", tags=["alerts"])
 
-# ===== SIEM INTEGRATION ENDPOINTS =====
+# Security scheme for Swagger docs
+security = HTTPBearer()
+
+# ===== CUSTOM AUTHENTICATION DECORATORS =====
+
+class TokenAuthenticationError(Exception):
+    """Custom exception for token authentication errors"""
+    def __init__(self, message: str, status_code: int = 401):
+        self.message = message
+        self.status_code = status_code
+
+async def validate_endpoint_token(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+) -> EndpointToken:
+    """
+    Validate endpoint token for external system authentication.
+    Used by SIEM, IDS, firewall systems.
+    """
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header required",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authorization header format. Expected: Bearer <token>",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    token = authorization.replace("Bearer ", "", 1)
+    
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token not provided",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    try:
+        # Hash the provided token
+        token_hash = EndpointToken.hash_token(token)
+        
+        # Find token in database
+        db_token = db.query(EndpointToken).filter(
+            EndpointToken.token_hash == token_hash
+        ).first()
+        
+        if not db_token:
+            logger.warning(f"Invalid token attempt from {request.client.host}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
+        # Check if token is valid (active and not expired)
+        if not db_token.is_valid():
+            reason = "expired" if db_token.is_expired() else "inactive"
+            logger.warning(f"Rejected {reason} token {db_token.token_prefix}... from {request.client.host}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Token is {reason}",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
+        # Check rate limiting
+        if not db_token.can_make_request():
+            logger.warning(f"Rate limit exceeded for token {db_token.token_prefix}... from {request.client.host}")
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Rate limit exceeded",
+                headers={
+                    "WWW-Authenticate": "Bearer",
+                    "Retry-After": "60"
+                }
+            )
+        
+        # Check IP restrictions if configured
+        if db_token.allowed_ips:
+            allowed_ips = json.loads(db_token.allowed_ips)
+            client_ip = request.client.host
+            
+            if client_ip not in allowed_ips:
+                logger.warning(f"IP {client_ip} not allowed for token {db_token.token_prefix}...")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="IP address not allowed for this token"
+                )
+        
+        # Record the request
+        db_token.record_request(db)
+        
+        logger.debug(f"Valid token {db_token.token_prefix}... used by {db_token.token_name}")
+        
+        return db_token
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Token validation error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Token validation failed"
+        )
+
+def require_token_permission(permission: str):
+    """
+    Decorator factory to require specific token permissions.
+    
+    Args:
+        permission: One of 'can_create_alerts', 'can_update_alerts', 'can_read_alerts'
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Get the token from kwargs (injected by dependency)
+            token = kwargs.get('token')
+            if not token:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Token validation failed - internal error"
+                )
+            
+            # Check permission
+            if not getattr(token, permission, False):
+                logger.warning(f"Token {token.token_prefix}... lacks permission: {permission}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Token does not have permission: {permission.replace('can_', '').replace('_', ' ')}"
+                )
+            
+            return await func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+# ===== DUAL AUTHENTICATION DEPENDENCY =====
+
+async def get_user_or_token(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+) -> Union[User, EndpointToken]:
+    """
+    Dependency that supports both JWT (for frontend) and token auth (for external systems).
+    Returns either a User (for JWT) or EndpointToken (for API tokens).
+    """
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header required",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authorization header format",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    token = authorization.replace("Bearer ", "", 1)
+    
+    # Try JWT first (for frontend users)
+    try:
+        from auth_utils import AuthManager
+        payload = AuthManager.verify_token(token)
+        if payload:
+            user = db.query(User).filter(User.id == payload.get("user_id")).first()
+            if user:
+                return user
+    except Exception:
+        pass  # If JWT fails, try endpoint token
+    
+    # Try endpoint token (for external systems)
+    try:
+        return await validate_endpoint_token(request, authorization, db)
+    except Exception:
+        pass
+    
+    # If both fail
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid authentication credentials",
+        headers={"WWW-Authenticate": "Bearer"}
+    )
+
+# ===== SIEM INTEGRATION ENDPOINTS (TOKEN AUTH) =====
 
 @router.post("/ingest", response_model=SiemIngestionResponse)
 async def ingest_alerts_from_siem(
     ingestion_request: SiemAlertIngestion,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    token: EndpointToken = Depends(validate_endpoint_token),
     db: Session = Depends(get_db)
 ):
     """
     Bulk ingestion endpoint for SIEM systems to submit alerts.
     This is the primary endpoint used by external SIEM/IDS systems.
+    
+    **Authentication: Requires valid endpoint token with 'can_create_alerts' permission.**
     """
+    # Check permission
+    if not token.can_create_alerts:
+        logger.warning(f"Token {token.token_prefix}... attempted alert creation without permission")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Token does not have permission to create alerts"
+        )
+    
     try:
         ingestion_id = str(uuid.uuid4())
         created_alert_ids = []
@@ -45,8 +251,18 @@ async def ingest_alerts_from_siem(
         processed_count = 0
         failed_count = 0
         
-        logger.info(f"Starting alert ingestion {ingestion_id} from {ingestion_request.source_system}")
+        logger.info(f"Starting alert ingestion {ingestion_id} from {ingestion_request.source_system} via token {token.token_name}")
         logger.info(f"Processing {len(ingestion_request.alerts)} alerts")
+        
+        # Check source restrictions if configured
+        if token.allowed_sources:
+            allowed_sources = json.loads(token.allowed_sources)
+            if ingestion_request.source_system not in allowed_sources:
+                logger.warning(f"Source system {ingestion_request.source_system} not allowed for token {token.token_prefix}...")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Source system '{ingestion_request.source_system}' not allowed for this token"
+                )
         
         for idx, alert_data in enumerate(ingestion_request.alerts):
             try:
@@ -93,7 +309,10 @@ async def ingest_alerts_from_siem(
                     status=AlertStatus.NEW,
                     received_at=ingestion_request.ingestion_timestamp or datetime.utcnow(),
                     created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow()
+                    updated_at=datetime.utcnow(),
+                    
+                    # Store token info for audit trail
+                    raw_alert_data={"ingested_via_token": token.token_name, "token_id": token.id}
                 )
                 
                 db.add(alert)
@@ -113,9 +332,9 @@ async def ingest_alerts_from_siem(
         # Commit all successful alerts
         if processed_count > 0:
             db.commit()
-            logger.info(f"Successfully committed {processed_count} alerts")
+            logger.info(f"Successfully committed {processed_count} alerts via token {token.token_name}")
             
-            # Schedule background task for alert processing (auto-assignment, playbook triggering, etc.)
+            # Schedule background task for alert processing
             background_tasks.add_task(process_new_alerts, created_alert_ids)
         else:
             db.rollback()
@@ -133,6 +352,8 @@ async def ingest_alerts_from_siem(
             ingestion_id=ingestion_id
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Critical error during alert ingestion: {str(e)}")
         db.rollback()
@@ -145,13 +366,32 @@ async def ingest_alerts_from_siem(
 async def create_single_alert(
     alert_data: AlertCreate,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    token: EndpointToken = Depends(validate_endpoint_token),
     db: Session = Depends(get_db)
 ):
     """
-    Create a single alert (for manual submission or simple integrations)
+    Create a single alert (for manual submission or simple integrations).
+    
+    **Authentication: Requires valid endpoint token with 'can_create_alerts' permission.**
     """
+    # Check permission
+    if not token.can_create_alerts:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Token does not have permission to create alerts"
+        )
+    
     try:
+        # Check source restrictions
+        if token.allowed_sources:
+            allowed_sources = json.loads(token.allowed_sources)
+            if alert_data.source_system and alert_data.source_system not in allowed_sources:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Source system '{alert_data.source_system}' not allowed for this token"
+                )
+        
         # Check for duplicate
         existing_alert = db.query(Alert).filter(
             Alert.external_alert_id == alert_data.external_alert_id,
@@ -187,7 +427,8 @@ async def create_single_alert(
             status=AlertStatus.NEW,
             received_at=datetime.utcnow(),
             created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            updated_at=datetime.utcnow(),
+            raw_alert_data={"created_via_token": token.token_name, "token_id": token.id}
         )
         
         db.add(alert)
@@ -197,7 +438,7 @@ async def create_single_alert(
         # Schedule background processing
         background_tasks.add_task(process_new_alerts, [alert.id])
         
-        logger.info(f"Created single alert {alert.id} from external ID {alert_data.external_alert_id}")
+        logger.info(f"Created single alert {alert.id} from external ID {alert_data.external_alert_id} via token {token.token_name}")
         
         return AlertResponse.from_orm(alert)
         
@@ -211,7 +452,7 @@ async def create_single_alert(
             detail=f"Failed to create alert: {str(e)}"
         )
 
-# ===== ALERT QUERY AND MANAGEMENT ENDPOINTS =====
+# ===== ALERT QUERY AND MANAGEMENT ENDPOINTS (DUAL AUTH) =====
 
 @router.get("/", response_model=Dict[str, Any])
 async def list_alerts(
@@ -233,17 +474,28 @@ async def list_alerts(
     size: int = Query(20, ge=1, le=100, description="Page size"),
     sort_by: str = Query("received_at", regex="^(received_at|detected_at|severity|status|updated_at)$"),
     sort_order: str = Query("desc", regex="^(asc|desc)$"),
-    current_user: User = Depends(get_current_user),
+    auth: Union[User, EndpointToken] = Depends(get_user_or_token),
     db: Session = Depends(get_db)
 ):
     """
-    List and search alerts with comprehensive filtering options
+    List and search alerts with comprehensive filtering options.
+    
+    **Authentication: Supports both JWT tokens (frontend) and endpoint tokens (external systems).**
+    **For endpoint tokens: Requires 'can_read_alerts' permission.**
     """
+    # Check permissions for token-based auth
+    if isinstance(auth, EndpointToken):
+        if not auth.can_read_alerts:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Token does not have permission to read alerts"
+            )
+    
     try:
         # Build base query
         query = db.query(Alert).options(joinedload(Alert.assigned_analyst))
         
-        # Apply filters
+        # Apply filters (same as before)
         if search:
             search_filter = f"%{search}%"
             query = query.filter(
@@ -294,7 +546,6 @@ async def list_alerts(
             query = query.filter(Alert.reported == reported)
         
         if overdue_only:
-            # Define overdue logic (customize based on your SLA requirements)
             overdue_threshold = datetime.utcnow() - timedelta(hours=24)
             query = query.filter(
                 and_(
@@ -359,12 +610,23 @@ async def list_alerts(
 @router.get("/{alert_id}", response_model=AlertResponse)
 async def get_alert(
     alert_id: int,
-    current_user: User = Depends(get_current_user),
+    auth: Union[User, EndpointToken] = Depends(get_user_or_token),
     db: Session = Depends(get_db)
 ):
     """
-    Get a specific alert by ID with full details
+    Get a specific alert by ID with full details.
+    
+    **Authentication: Supports both JWT tokens (frontend) and endpoint tokens (external systems).**
+    **For endpoint tokens: Requires 'can_read_alerts' permission.**
     """
+    # Check permissions for token-based auth
+    if isinstance(auth, EndpointToken):
+        if not auth.can_read_alerts:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Token does not have permission to read alerts"
+            )
+    
     alert = db.query(Alert).options(
         joinedload(Alert.assigned_analyst)
     ).filter(Alert.id == alert_id).first()
@@ -386,7 +648,7 @@ async def get_alert(
     
     # Check if overdue
     if alert.status in [AlertStatus.NEW, AlertStatus.TRIAGED, AlertStatus.INVESTIGATING]:
-        overdue_threshold = datetime.utcnow() - timedelta(hours=24)  # Customize SLA
+        overdue_threshold = datetime.utcnow() - timedelta(hours=24)
         alert_response.is_overdue = alert.received_at <= overdue_threshold
     
     return alert_response
@@ -395,12 +657,23 @@ async def get_alert(
 async def update_alert(
     alert_id: int,
     alert_update: AlertUpdate,
-    current_user: User = Depends(get_current_user),
+    auth: Union[User, EndpointToken] = Depends(get_user_or_token),
     db: Session = Depends(get_db)
 ):
     """
-    Update an alert (for analysts to update status, assignment, etc.)
+    Update an alert (for analysts to update status, assignment, etc.).
+    
+    **Authentication: Supports both JWT tokens (frontend) and endpoint tokens (external systems).**
+    **For endpoint tokens: Requires 'can_update_alerts' permission.**
     """
+    # Check permissions for token-based auth
+    if isinstance(auth, EndpointToken):
+        if not auth.can_update_alerts:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Token does not have permission to update alerts"
+            )
+    
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     
     if not alert:
@@ -443,10 +716,17 @@ async def update_alert(
         
         alert.updated_at = now
         
+        # Add audit info based on auth type
+        if isinstance(auth, EndpointToken):
+            if not alert.raw_alert_data:
+                alert.raw_alert_data = {}
+            alert.raw_alert_data["last_updated_via_token"] = auth.token_name
+        
         db.commit()
         db.refresh(alert)
         
-        logger.info(f"Updated alert {alert_id} by user {current_user.id}")
+        auth_info = f"token {auth.token_name}" if isinstance(auth, EndpointToken) else f"user {auth.id}"
+        logger.info(f"Updated alert {alert_id} by {auth_info}")
         
         return AlertResponse.from_orm(alert)
         
@@ -458,13 +738,17 @@ async def update_alert(
             detail=f"Failed to update alert: {str(e)}"
         )
 
+# ===== ADMIN/ANALYST ONLY ENDPOINTS (JWT AUTH ONLY) =====
+
 @router.get("/stats/overview", response_model=AlertStatsResponse)
 async def get_alert_stats(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Get alert statistics overview for dashboards
+    Get alert statistics overview for dashboards.
+    
+    **Authentication: JWT only (frontend users)**
     """
     try:
         # Basic counts by status
@@ -476,7 +760,7 @@ async def get_alert_stats(
         resolved_alerts = db.query(Alert).filter(Alert.status == AlertStatus.RESOLVED).count()
         false_positives = db.query(Alert).filter(Alert.status == AlertStatus.FALSE_POSITIVE).count()
         
-        # Overdue alerts (customize SLA as needed)
+        # Overdue alerts
         overdue_threshold = datetime.utcnow() - timedelta(hours=24)
         overdue_alerts = db.query(Alert).filter(
             and_(
@@ -554,7 +838,9 @@ async def bulk_update_alerts(
     db: Session = Depends(get_db)
 ):
     """
-    Bulk update multiple alerts (requires elevated permissions)
+    Bulk update multiple alerts (requires elevated permissions).
+    
+    **Authentication: JWT only (frontend users with elevated roles)**
     """
     try:
         # Get all alerts to update
@@ -594,6 +880,116 @@ async def bulk_update_alerts(
             detail=f"Bulk update failed: {str(e)}"
         )
 
+# ===== HEALTH CHECK ENDPOINT (NO AUTH REQUIRED) =====
+
+@router.get("/health", response_model=Dict[str, Any])
+async def health_check(db: Session = Depends(get_db)):
+    """
+    Health check endpoint for SIEM systems to verify API availability.
+    
+    **Authentication: None required**
+    """
+    try:
+        # Test database connectivity
+        db.execute(text("SELECT 1"))
+        
+        # Get basic stats
+        total_alerts = db.query(Alert).count()
+        recent_alerts = db.query(Alert).filter(
+            Alert.received_at >= datetime.utcnow() - timedelta(hours=24)
+        ).count()
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "database": "connected",
+            "total_alerts": total_alerts,
+            "alerts_last_24h": recent_alerts,
+            "authentication": {
+                "jwt_auth": "available",
+                "token_auth": "available"
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Service unhealthy: {str(e)}"
+        )
+
+# ===== TOKEN INFORMATION ENDPOINT =====
+
+@router.get("/token/info", response_model=Dict[str, Any])
+async def get_token_info(
+    token: EndpointToken = Depends(validate_endpoint_token),
+    db: Session = Depends(get_db)
+):
+    """
+    Get information about the current token (for external systems to verify their config).
+    
+    **Authentication: Endpoint token only**
+    """
+    try:
+        # Calculate rate limit status
+        now = datetime.utcnow()
+        current_minute = now.replace(second=0, microsecond=0)
+        
+        remaining_requests = token.rate_limit_per_minute
+        if (token.request_count_minute_start and 
+            token.request_count_minute_start >= current_minute):
+            remaining_requests = token.rate_limit_per_minute - token.request_count_current_minute
+        
+        # Parse allowed restrictions
+        allowed_ips = None
+        allowed_sources = None
+        
+        if token.allowed_ips:
+            try:
+                allowed_ips = json.loads(token.allowed_ips)
+            except:
+                pass
+        
+        if token.allowed_sources:
+            try:
+                allowed_sources = json.loads(token.allowed_sources)
+            except:
+                pass
+        
+        return {
+            "token_name": token.token_name,
+            "token_prefix": token.token_prefix,
+            "permissions": {
+                "can_create_alerts": token.can_create_alerts,
+                "can_update_alerts": token.can_update_alerts,
+                "can_read_alerts": token.can_read_alerts
+            },
+            "rate_limiting": {
+                "requests_per_minute": token.rate_limit_per_minute,
+                "remaining_this_minute": remaining_requests,
+                "total_requests_made": token.total_requests
+            },
+            "restrictions": {
+                "allowed_ips": allowed_ips,
+                "allowed_sources": allowed_sources
+            },
+            "status": {
+                "is_active": token.is_active,
+                "expires_at": token.expires_at.isoformat() if token.expires_at else None,
+                "is_expired": token.is_expired(),
+                "last_used_at": token.last_used_at.isoformat() if token.last_used_at else None
+            },
+            "created_at": token.created_at.isoformat(),
+            "updated_at": token.updated_at.isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting token info: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get token information: {str(e)}"
+        )
+
 # ===== BACKGROUND TASK FUNCTIONS =====
 
 async def process_new_alerts(alert_ids: List[int]):
@@ -618,34 +1014,60 @@ async def process_new_alerts(alert_ids: List[int]):
     except Exception as e:
         logger.error(f"Error processing new alerts: {str(e)}")
 
-# ===== HEALTH CHECK ENDPOINT =====
+# ===== ADDITIONAL UTILITY ENDPOINTS =====
 
-@router.get("/health", response_model=Dict[str, Any])
-async def health_check(db: Session = Depends(get_db)):
+@router.get("/sources", response_model=List[str])
+async def get_alert_sources(
+    auth: Union[User, EndpointToken] = Depends(get_user_or_token),
+    db: Session = Depends(get_db)
+):
     """
-    Health check endpoint for SIEM systems to verify API availability
+    Get list of all alert sources in the system.
+    
+    **Authentication: Supports both JWT and endpoint tokens with read permission**
     """
+    # Check permissions for token-based auth
+    if isinstance(auth, EndpointToken):
+        if not auth.can_read_alerts:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Token does not have permission to read alerts"
+            )
+    
     try:
-        # Test database connectivity
-        db.execute(text("SELECT 1"))
-        
-        # Get basic stats
-        total_alerts = db.query(Alert).count()
-        recent_alerts = db.query(Alert).filter(
-            Alert.received_at >= datetime.utcnow() - timedelta(hours=24)
-        ).count()
-        
-        return {
-            "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat(),
-            "database": "connected",
-            "total_alerts": total_alerts,
-            "alerts_last_24h": recent_alerts
-        }
-        
+        sources = db.query(Alert.source).distinct().all()
+        return [source[0] for source in sources if source[0]]
     except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
+        logger.error(f"Error getting alert sources: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Service unhealthy: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get alert sources"
+        )
+
+@router.get("/source-systems", response_model=List[str])
+async def get_source_systems(
+    auth: Union[User, EndpointToken] = Depends(get_user_or_token),
+    db: Session = Depends(get_db)
+):
+    """
+    Get list of all source systems in the system.
+    
+    **Authentication: Supports both JWT and endpoint tokens with read permission**
+    """
+    # Check permissions for token-based auth
+    if isinstance(auth, EndpointToken):
+        if not auth.can_read_alerts:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Token does not have permission to read alerts"
+            )
+    
+    try:
+        systems = db.query(Alert.source_system).distinct().all()
+        return [system[0] for system in systems if system[0]]
+    except Exception as e:
+        logger.error(f"Error getting source systems: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get source systems"
         )

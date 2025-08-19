@@ -655,3 +655,400 @@ class SiemIngestionResponse(BaseModel):
     created_alert_ids: List[int] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
     ingestion_id: str
+
+
+# ===== ENDPOINT TOKEN SCHEMAS =====
+
+class EndpointTokenBase(BaseModel):
+    """Base endpoint token fields"""
+    token_name: str = Field(..., min_length=1, max_length=100, description="Name for the token")
+    description: Optional[str] = Field(None, max_length=500, description="Description of the token's purpose")
+    
+    # Permissions
+    can_create_alerts: bool = Field(True, description="Allow creating alerts")
+    can_update_alerts: bool = Field(False, description="Allow updating alerts")
+    can_read_alerts: bool = Field(True, description="Allow reading alerts")
+    
+    # Rate limiting
+    rate_limit_per_minute: int = Field(100, ge=1, le=1000, description="Requests per minute limit")
+    
+    # Access restrictions (optional)
+    allowed_ips: Optional[List[str]] = Field(None, description="List of allowed IP addresses/ranges")
+    allowed_sources: Optional[List[str]] = Field(None, description="List of allowed source systems")
+
+class EndpointTokenCreate(EndpointTokenBase):
+    """Schema for creating a new endpoint token"""
+    # Expiration (optional)
+    expires_in_days: Optional[int] = Field(None, ge=1, le=365, description="Token expiration in days")
+    
+    @validator('token_name')
+    def validate_token_name(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Token name cannot be empty')
+        # Check for valid characters (alphanumeric, spaces, hyphens, underscores)
+        import re
+        if not re.match(r'^[a-zA-Z0-9\s\-_]+$', v.strip()):
+            raise ValueError('Token name can only contain letters, numbers, spaces, hyphens, and underscores')
+        return v.strip()
+    
+    @validator('allowed_ips')
+    def validate_ip_addresses(cls, v):
+        if v is None:
+            return v
+        
+        import ipaddress
+        valid_ips = []
+        for ip in v:
+            try:
+                # Try to parse as IP address or network
+                ipaddress.ip_network(ip, strict=False)
+                valid_ips.append(ip.strip())
+            except ValueError:
+                raise ValueError(f'Invalid IP address or network: {ip}')
+        return valid_ips if valid_ips else None
+    
+    @validator('allowed_sources')
+    def validate_source_systems(cls, v):
+        if v is None:
+            return v
+        
+        valid_sources = []
+        for source in v:
+            if source and source.strip():
+                valid_sources.append(source.strip())
+        return valid_sources if valid_sources else None
+
+class EndpointTokenUpdate(BaseModel):
+    """Schema for updating an endpoint token"""
+    token_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
+    
+    # Permissions
+    can_create_alerts: Optional[bool] = None
+    can_update_alerts: Optional[bool] = None
+    can_read_alerts: Optional[bool] = None
+    
+    # Rate limiting
+    rate_limit_per_minute: Optional[int] = Field(None, ge=1, le=1000)
+    
+    # Status
+    is_active: Optional[bool] = None
+    
+    # Expiration
+    expires_in_days: Optional[int] = Field(None, ge=1, le=365, description="Extend expiration by days from now")
+    
+    # Access restrictions
+    allowed_ips: Optional[List[str]] = None
+    allowed_sources: Optional[List[str]] = None
+    
+    @validator('token_name')
+    def validate_token_name(cls, v):
+        if v is None:
+            return v
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Token name cannot be empty')
+        import re
+        if not re.match(r'^[a-zA-Z0-9\s\-_]+$', v.strip()):
+            raise ValueError('Token name can only contain letters, numbers, spaces, hyphens, and underscores')
+        return v.strip()
+    
+    @validator('allowed_ips')
+    def validate_ip_addresses(cls, v):
+        if v is None:
+            return v
+        
+        import ipaddress
+        valid_ips = []
+        for ip in v:
+            try:
+                ipaddress.ip_network(ip, strict=False)
+                valid_ips.append(ip.strip())
+            except ValueError:
+                raise ValueError(f'Invalid IP address or network: {ip}')
+        return valid_ips if valid_ips else None
+    
+    @validator('allowed_sources')
+    def validate_source_systems(cls, v):
+        if v is None:
+            return v
+        
+        valid_sources = []
+        for source in v:
+            if source and source.strip():
+                valid_sources.append(source.strip())
+        return valid_sources if valid_sources else None
+
+class EndpointTokenResponse(BaseModel):
+    """Schema for endpoint token responses (without the actual token)"""
+    id: int
+    token_name: str
+    token_prefix: str = Field(..., description="First 8 characters for identification")
+    description: Optional[str] = None
+    
+    # Status
+    is_active: bool
+    expires_at: Optional[datetime] = None
+    is_expired: bool = Field(..., description="Computed field indicating if token is expired")
+    
+    # Permissions
+    can_create_alerts: bool
+    can_update_alerts: bool
+    can_read_alerts: bool
+    
+    # Rate limiting
+    rate_limit_per_minute: int
+    
+    # Usage statistics
+    total_requests: int = 0
+    last_used_at: Optional[datetime] = None
+    
+    # Audit information
+    created_by_id: int
+    created_at: datetime
+    updated_at: datetime
+    
+    # Access restrictions
+    allowed_ips: Optional[List[str]] = None
+    allowed_sources: Optional[List[str]] = None
+    
+    # Relationships
+    created_by: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        from_attributes = True
+
+class EndpointTokenCreateResponse(BaseModel):
+    """Schema for token creation response (includes the actual token once)"""
+    token: str = Field(..., description="The actual token - only shown once")
+    token_info: EndpointTokenResponse
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "token": "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
+                "token_info": {
+                    "id": 1,
+                    "token_name": "Firewall Integration",
+                    "token_prefix": "a1b2c3d4",
+                    "description": "Token for firewall to send security alerts",
+                    "is_active": True,
+                    "expires_at": "2025-04-15T10:30:00Z",
+                    "is_expired": False,
+                    "can_create_alerts": True,
+                    "can_update_alerts": False,
+                    "can_read_alerts": True,
+                    "rate_limit_per_minute": 100,
+                    "total_requests": 0,
+                    "last_used_at": None,
+                    "created_by_id": 1,
+                    "created_at": "2025-01-15T10:30:00Z",
+                    "updated_at": "2025-01-15T10:30:00Z",
+                    "allowed_ips": ["192.168.1.0/24"],
+                    "allowed_sources": ["Splunk", "Firewall"]
+                }
+            }
+        }
+
+class TokenValidationResponse(BaseModel):
+    """Schema for token validation response"""
+    valid: bool
+    token_id: Optional[int] = None
+    token_name: Optional[str] = None
+    permissions: Optional[Dict[str, bool]] = None
+    rate_limit_remaining: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    message: Optional[str] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "valid": True,
+                "token_id": 1,
+                "token_name": "Firewall Integration",
+                "permissions": {
+                    "can_create_alerts": True,
+                    "can_update_alerts": False,
+                    "can_read_alerts": True
+                },
+                "rate_limit_remaining": 99,
+                "expires_at": "2025-04-15T10:30:00Z",
+                "message": None
+            }
+        }
+
+class PaginatedTokenResponse(BaseModel):
+    """Paginated response for tokens"""
+    items: List[EndpointTokenResponse]
+    total: int
+    page: int
+    size: int
+    pages: int
+    
+class EndpointTokenSearchRequest(BaseModel):
+    """Schema for searching endpoint tokens"""
+    search: Optional[str] = Field(None, description="Search in token name and description")
+    active_only: bool = Field(False, description="Show only active tokens")
+    created_by_id: Optional[int] = Field(None, description="Filter by creator")
+    expires_before: Optional[datetime] = Field(None, description="Filter tokens expiring before this date")
+    expires_after: Optional[datetime] = Field(None, description="Filter tokens expiring after this date")
+    last_used_before: Optional[datetime] = Field(None, description="Filter tokens last used before this date")
+    last_used_after: Optional[datetime] = Field(None, description="Filter tokens last used after this date")
+    
+    # Pagination
+    page: int = Field(1, ge=1, description="Page number")
+    size: int = Field(20, ge=1, le=100, description="Items per page")
+    
+    # Sorting
+    sort_by: str = Field("created_at", description="Sort field", 
+                        pattern="^(created_at|updated_at|last_used_at|token_name|total_requests)$")
+    sort_order: str = Field("desc", description="Sort order", pattern="^(asc|desc)$")
+
+class TokenUsageStatsResponse(BaseModel):
+    """Schema for token usage statistics"""
+    token_id: int
+    token_name: str
+    token_prefix: str
+    
+    # Usage metrics
+    total_requests: int
+    requests_last_24h: int
+    requests_last_7d: int
+    requests_last_30d: int
+    
+    # Rate limiting stats
+    rate_limit_per_minute: int
+    current_minute_requests: int
+    rate_limit_hits: int  # Number of times rate limit was exceeded
+    
+    # Time-based stats
+    first_used_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
+    most_active_hour: Optional[int] = None  # Hour of day (0-23) with most requests
+    
+    # Status
+    is_active: bool
+    expires_at: Optional[datetime] = None
+    days_until_expiry: Optional[int] = None
+    
+    class Config:
+        from_attributes = True
+
+class TokenPermissionsUpdate(BaseModel):
+    """Schema for updating only token permissions"""
+    can_create_alerts: Optional[bool] = None
+    can_update_alerts: Optional[bool] = None
+    can_read_alerts: Optional[bool] = None
+    
+    @validator('can_create_alerts', 'can_update_alerts', 'can_read_alerts')
+    def at_least_one_permission(cls, v, values):
+        # Ensure at least one permission is granted
+        permissions = [v] + [values.get(field) for field in ['can_create_alerts', 'can_update_alerts', 'can_read_alerts']]
+        if all(p is False for p in permissions if p is not None):
+            raise ValueError('At least one permission must be granted')
+        return v
+
+class TokenRateLimitUpdate(BaseModel):
+    """Schema for updating token rate limits"""
+    rate_limit_per_minute: int = Field(..., ge=1, le=1000, description="New rate limit")
+    reset_current_usage: bool = Field(False, description="Reset current minute usage counter")
+
+class TokenSecurityUpdate(BaseModel):
+    """Schema for updating token security settings"""
+    allowed_ips: Optional[List[str]] = Field(None, description="Update allowed IP addresses")
+    allowed_sources: Optional[List[str]] = Field(None, description="Update allowed source systems")
+    
+    @validator('allowed_ips')
+    def validate_ip_addresses(cls, v):
+        if v is None:
+            return v
+        
+        import ipaddress
+        valid_ips = []
+        for ip in v:
+            try:
+                ipaddress.ip_network(ip, strict=False)
+                valid_ips.append(ip.strip())
+            except ValueError:
+                raise ValueError(f'Invalid IP address or network: {ip}')
+        return valid_ips if valid_ips else None
+    
+    @validator('allowed_sources')
+    def validate_source_systems(cls, v):
+        if v is None:
+            return v
+        
+        valid_sources = []
+        for source in v:
+            if source and source.strip():
+                valid_sources.append(source.strip())
+        return valid_sources if valid_sources else None
+
+class BulkTokenOperation(BaseModel):
+    """Schema for bulk token operations"""
+    token_ids: List[int] = Field(..., min_items=1, max_items=50, description="List of token IDs")
+    operation: str = Field(..., description="Operation to perform", 
+                          pattern="^(activate|deactivate|delete)$")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "token_ids": [1, 2, 3],
+                "operation": "deactivate"
+            }
+        }
+
+class BulkTokenOperationResponse(BaseModel):
+    """Response for bulk token operations"""
+    success: bool
+    processed_count: int
+    failed_count: int
+    results: List[Dict[str, Any]] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "processed_count": 2,
+                "failed_count": 1,
+                "results": [
+                    {"token_id": 1, "status": "deactivated"},
+                    {"token_id": 2, "status": "deactivated"}
+                ],
+                "errors": ["Token 3 not found"]
+            }
+        }
+
+# === TOKEN AUDIT SCHEMAS ===
+
+class TokenAuditLogResponse(BaseModel):
+    """Schema for token audit log entries"""
+    id: int
+    token_id: int
+    token_name: str
+    action: str  # created, updated, used, deactivated, deleted, rate_limited
+    details: Dict[str, Any] = Field(default_factory=dict)
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    performed_by_id: Optional[int] = None
+    performed_by: Optional[Dict[str, Any]] = None
+    timestamp: datetime
+    
+    class Config:
+        from_attributes = True
+
+class TokenAuditSearchRequest(BaseModel):
+    """Schema for searching token audit logs"""
+    token_id: Optional[int] = None
+    action: Optional[str] = None
+    ip_address: Optional[str] = None
+    performed_by_id: Optional[int] = None
+    from_date: Optional[datetime] = None
+    to_date: Optional[datetime] = None
+    
+    # Pagination
+    page: int = Field(1, ge=1)
+    size: int = Field(50, ge=1, le=100)
+    
+    # Sorting
+    sort_order: str = Field("desc", pattern="^(asc|desc)$")
