@@ -11,7 +11,7 @@ from siem_routes.playbooks import router as playbook_router
 from siem_routes.endpoint_tokens import router as endpoint_tokens_router
 from routes.alert import router as alert_router
 from schemas import HealthCheck, ErrorResponse
-from websockets.incidents import websocket_endpoint, cleanup_connections_task
+from ws.incidents import websocket_endpoint, cleanup_connections_task
 import asyncio
 
 # Create database tables

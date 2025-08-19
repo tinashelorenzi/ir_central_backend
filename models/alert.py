@@ -162,10 +162,10 @@ class Alert(Base):
     resolution_at = Column(DateTime, nullable=True)        # When fully resolved
     
     # === RELATIONSHIPS ===
-    assigned_analyst = relationship("User", foreign_keys=[assigned_analyst_id])
+    assigned_analyst = relationship("User", foreign_keys=[assigned_analyst_id], back_populates="assigned_alerts")
     playbook_execution = relationship("PlaybookExecution", foreign_keys=[playbook_execution_id])
-    parent_alert = relationship("Alert", remote_side=[id], foreign_keys=[parent_alert_id])
-    child_alerts = relationship("Alert", foreign_keys=[parent_alert_id])
+    parent_alert = relationship("Alert", remote_side=[id], foreign_keys=[parent_alert_id], back_populates="child_alerts")
+    child_alerts = relationship("Alert", foreign_keys=[parent_alert_id], back_populates="parent_alert")
     
     # Indexes for performance
     __table_args__ = (
@@ -253,7 +253,7 @@ class AlertArtifact(Base):
     
     # Relationships
     alert = relationship("Alert")
-    collected_by = relationship("User", foreign_keys=[collected_by_id])
+    collected_by = relationship("User", foreign_keys=[collected_by_id], back_populates="collected_artifacts")
     
     def __repr__(self):
         return f"<AlertArtifact(id={self.id}, type='{self.artifact_type}', filename='{self.filename}')>"

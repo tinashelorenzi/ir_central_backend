@@ -139,6 +139,7 @@ class PlaybookExecution(Base):
     assigned_analyst = relationship("User", foreign_keys=[assigned_analyst_id])
     step_logs = relationship("StepExecutionLog", back_populates="execution")
     user_inputs = relationship("PlaybookUserInput", back_populates="execution")
+    incident = relationship("Incident", back_populates="playbook_execution")
 
 class StepExecutionLog(Base):
     """Log of individual step executions within a playbook"""

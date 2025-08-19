@@ -329,4 +329,4 @@ class IncidentArtifact(Base):
     
     # Relationships
     incident = relationship("Incident", backref="artifacts")
-    collected_by = relationship("User", backref="collected_artifacts")
+    collected_by = relationship("User", backref="collected_incident_artifacts")
