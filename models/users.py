@@ -59,6 +59,11 @@ class User(Base):
     mfa_secret = Column(String(32), nullable=True)  # TOTP secret
     backup_codes = Column(JSON, nullable=True)  # MFA backup codes
     
+    # Relationships
+    created_tokens = relationship("EndpointToken", back_populates="created_by")
+    assigned_alerts = relationship("Alert", foreign_keys="[Alert.assigned_analyst_id]")
+    collected_artifacts = relationship("AlertArtifact", foreign_keys="[AlertArtifact.collected_by_id]")
+    
     def __repr__(self):
         return f"<User(username='{self.username}', role='{self.role}', active={self.is_active})>"
 
