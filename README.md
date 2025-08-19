@@ -27,6 +27,13 @@ A comprehensive Incident Response Central Management System built with FastAPI, 
 - **Comprehensive error handling**
 - **Audit trail** for user actions
 
+### Real-time Features
+- **WebSocket integration** for real-time alert updates
+- **Live incident notifications** to connected frontend users
+- **Real-time alert broadcasting** when new alerts are created
+- **Instant status updates** when alerts are modified
+- **WebSocket authentication** with JWT tokens
+
 ## Quick Start
 
 ### Prerequisites
@@ -82,6 +89,7 @@ A comprehensive Incident Response Central Management System built with FastAPI, 
    - API Documentation: http://localhost:8000/docs
    - Health Check: http://localhost:8000/health
    - Root Endpoint: http://localhost:8000/
+   - WebSocket Endpoint: ws://localhost:8000/ws/incidents
 
 ## API Endpoints
 
@@ -177,6 +185,35 @@ Request password reset token.
 #### POST `/api/v1/auth/password-reset/confirm`
 Confirm password reset with token.
 
+### WebSocket Endpoints
+
+#### WebSocket `/ws/incidents`
+Real-time incident and alert updates.
+
+**Connection:**
+```
+ws://localhost:8000/ws/incidents?token=your-jwt-token
+```
+
+**Message Types:**
+- `new_alert`: New alert created
+- `alert_updated`: Alert status/assignment updated
+- `incident_created`: New incident created
+- `incident_updated`: Incident status updated
+- `initial_data`: Initial data sent on connection
+
+**Example Usage:**
+```javascript
+const ws = new WebSocket(`ws://localhost:8000/ws/incidents?token=${token}`);
+
+ws.onmessage = function(event) {
+  const message = JSON.parse(event.data);
+  if (message.type === 'new_alert') {
+    console.log('New alert:', message.data);
+  }
+};
+```
+
 ## User Roles
 
 ### Analyst
@@ -246,10 +283,18 @@ ir_central_backend/
 ├── schemas.py              # Pydantic schemas
 ├── config.py               # Configuration settings
 ├── models/
-│   └── users.py            # User models and utilities
+│   ├── users.py            # User models and utilities
+│   ├── alert.py            # Alert models
+│   └── incident.py         # Incident models
+├── routes/
+│   └── alert.py            # Alert API routes
 ├── siem_routes/
 │   └── auth.py             # Authentication API routes
+├── ws/
+│   └── incidents.py        # WebSocket incident management
 ├── requirements.txt        # Python dependencies
+├── WEBSOCKET_ALERT_INTEGRATION.md  # WebSocket integration docs
+├── test_websocket_alerts.py        # WebSocket testing script
 └── README.md              # This file
 ```
 

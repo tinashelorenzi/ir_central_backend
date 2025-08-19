@@ -22,6 +22,7 @@ from schemas import (
     BulkAlertUpdate, AlertTagCreate, AlertTagResponse,
     AlertArtifactCreate, AlertArtifactResponse, MessageResponse
 )
+from ws.incidents import websocket_manager
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -336,6 +337,9 @@ async def ingest_alerts_from_siem(
             
             # Schedule background task for alert processing
             background_tasks.add_task(process_new_alerts, created_alert_ids)
+            
+            # Broadcast new alerts via WebSocket
+            background_tasks.add_task(broadcast_new_alerts_websocket, created_alert_ids, db)
         else:
             db.rollback()
             
@@ -437,6 +441,9 @@ async def create_single_alert(
         
         # Schedule background processing
         background_tasks.add_task(process_new_alerts, [alert.id])
+        
+        # Broadcast new alert via WebSocket
+        background_tasks.add_task(broadcast_new_alerts_websocket, [alert.id], db)
         
         logger.info(f"Created single alert {alert.id} from external ID {alert_data.external_alert_id} via token {token.token_name}")
         
@@ -657,6 +664,7 @@ async def get_alert(
 async def update_alert(
     alert_id: int,
     alert_update: AlertUpdate,
+    background_tasks: BackgroundTasks,
     auth: Union[User, EndpointToken] = Depends(get_user_or_token),
     db: Session = Depends(get_db)
 ):
@@ -724,6 +732,9 @@ async def update_alert(
         
         db.commit()
         db.refresh(alert)
+        
+        # Broadcast alert update via WebSocket
+        background_tasks.add_task(broadcast_alert_update_websocket, alert_id, db)
         
         auth_info = f"token {auth.token_name}" if isinstance(auth, EndpointToken) else f"user {auth.id}"
         logger.info(f"Updated alert {alert_id} by {auth_info}")
@@ -873,6 +884,59 @@ async def process_new_alerts(alert_ids: List[int]):
             
     except Exception as e:
         logger.error(f"Error processing new alerts: {str(e)}")
+
+async def broadcast_new_alerts_websocket(alert_ids: List[int], db: Session):
+    """
+    Background task to broadcast new alerts via WebSocket to connected frontend users
+    """
+    try:
+        logger.info(f"Broadcasting {len(alert_ids)} new alerts via WebSocket")
+        
+        # Get the alerts from database
+        alerts = db.query(Alert).options(
+            joinedload(Alert.assigned_analyst)
+        ).filter(Alert.id.in_(alert_ids)).all()
+        
+        # Broadcast each alert to connected users
+        for alert in alerts:
+            try:
+                await websocket_manager.broadcast_new_alert(alert, db)
+                logger.debug(f"Broadcasted alert {alert.id} via WebSocket")
+            except Exception as e:
+                logger.error(f"Error broadcasting alert {alert.id}: {str(e)}")
+                
+    except Exception as e:
+        logger.error(f"Error in WebSocket alert broadcasting: {str(e)}")
+    finally:
+        # Close the database session
+        db.close()
+
+async def broadcast_alert_update_websocket(alert_id: int, db: Session):
+    """
+    Background task to broadcast alert updates via WebSocket to connected frontend users
+    """
+    try:
+        logger.info(f"Broadcasting alert update {alert_id} via WebSocket")
+        
+        # Get the updated alert from database
+        alert = db.query(Alert).options(
+            joinedload(Alert.assigned_analyst)
+        ).filter(Alert.id == alert_id).first()
+        
+        if alert:
+            try:
+                await websocket_manager.broadcast_alert_update(alert, db)
+                logger.debug(f"Broadcasted alert update {alert_id} via WebSocket")
+            except Exception as e:
+                logger.error(f"Error broadcasting alert update {alert_id}: {str(e)}")
+        else:
+            logger.warning(f"Alert {alert_id} not found for WebSocket broadcast")
+                
+    except Exception as e:
+        logger.error(f"Error in WebSocket alert update broadcasting: {str(e)}")
+    finally:
+        # Close the database session
+        db.close()
 
 # ===== ADDITIONAL UTILITY ENDPOINTS =====
 

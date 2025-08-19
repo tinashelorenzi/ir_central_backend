@@ -94,9 +94,9 @@ async def root():
     }
 
 # Websockets
-# @app.websocket("/ws/incidents")
-# async def incidents_websocket(websocket: WebSocket):
-#     await websocket_endpoint(websocket)
+@app.websocket("/ws/incidents")
+async def incidents_websocket(websocket: WebSocket):
+    await websocket_endpoint(websocket)
 
 
 

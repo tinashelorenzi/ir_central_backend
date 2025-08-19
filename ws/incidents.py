@@ -19,6 +19,124 @@ from schemas import IncidentResponse, AlertResponse
 
 logger = logging.getLogger(__name__)
 
+
+def serialize_user_for_response(user) -> Dict[str, Any]:
+    """Convert User model to dictionary for API responses"""
+    if not user:
+        return None
+    
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "is_active": user.is_active,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+        "last_login": user.last_login.isoformat() if user.last_login else None
+    }
+
+def create_incident_response_dict(incident) -> Dict[str, Any]:
+    """Create a properly serialized incident response dictionary"""
+    
+    # Convert the incident to dict first
+    incident_dict = {
+        "id": incident.id,
+        "incident_id": incident.incident_id,
+        "title": incident.title,
+        "description": incident.description,
+        "severity": incident.severity,
+        "priority": incident.priority,
+        "status": incident.status,
+        "category": incident.category,
+        
+        # IDs
+        "owner_id": incident.owner_id,
+        "assigned_analyst_id": incident.assigned_analyst_id,
+        "escalated_to_id": incident.escalated_to_id,
+        
+        # Timing
+        "created_at": incident.created_at.isoformat() if incident.created_at else None,
+        "updated_at": incident.updated_at.isoformat() if incident.updated_at else None,
+        "first_response_at": incident.first_response_at.isoformat() if incident.first_response_at else None,
+        "contained_at": incident.contained_at.isoformat() if incident.contained_at else None,
+        "resolved_at": incident.resolved_at.isoformat() if incident.resolved_at else None,
+        "closed_at": incident.closed_at.isoformat() if incident.closed_at else None,
+        
+        # SLA tracking
+        "response_sla_deadline": incident.response_sla_deadline.isoformat() if incident.response_sla_deadline else None,
+        "resolution_sla_deadline": incident.resolution_sla_deadline.isoformat() if incident.resolution_sla_deadline else None,
+        "sla_breached": incident.sla_breached or False,
+        
+        # Related data
+        "alert_ids": incident.alert_ids or [],
+        "affected_systems": incident.affected_systems or [],
+        "affected_users": incident.affected_users or [],
+        "affected_services": incident.affected_services or [],
+        
+        # Investigation
+        "investigation_summary": incident.investigation_summary,
+        "investigation_notes": incident.investigation_notes,
+        "incident_timeline": incident.incident_timeline or [],
+        
+        # Impact
+        "business_impact": incident.business_impact,
+        "estimated_financial_loss": incident.estimated_financial_loss,
+        "data_compromised": incident.data_compromised or False,
+        "data_types_affected": incident.data_types_affected or [],
+        "systems_compromised": incident.systems_compromised or 0,
+        "users_affected": incident.users_affected or 0,
+        
+        # Response
+        "containment_strategy": incident.containment_strategy,
+        "containment_actions": incident.containment_actions or [],
+        "eradication_actions": incident.eradication_actions or [],
+        "recovery_actions": incident.recovery_actions or [],
+        
+        # Playbook
+        "playbook_execution_id": incident.playbook_execution_id,
+        "automated_actions": incident.automated_actions or [],
+        
+        # Communication
+        "internal_notifications": incident.internal_notifications or [],
+        "external_notifications": incident.external_notifications or [],
+        
+        # Compliance
+        "requires_external_reporting": incident.requires_external_reporting or False,
+        "external_reporting_deadline": incident.external_reporting_deadline.isoformat() if incident.external_reporting_deadline else None,
+        "reported_to_authorities": incident.reported_to_authorities or False,
+        "compliance_requirements": incident.compliance_requirements or [],
+        
+        # Post-incident
+        "lessons_learned": incident.lessons_learned,
+        "recommendations": incident.recommendations or [],
+        "follow_up_actions": incident.follow_up_actions or [],
+        "post_incident_review_completed": incident.post_incident_review_completed or False,
+        "post_incident_review_notes": incident.post_incident_review_notes,
+        "post_incident_review_date": incident.post_incident_review_date.isoformat() if incident.post_incident_review_date else None,
+        
+        # Metadata
+        "correlation_id": incident.correlation_id,
+        "parent_incident_id": incident.parent_incident_id,
+        "tags": incident.tags or [],
+        "custom_fields": incident.custom_fields or {},
+        
+        # Relationships (properly serialized)
+        "owner": serialize_user_for_response(incident.owner),
+        "assigned_analyst": serialize_user_for_response(incident.assigned_analyst),
+        "escalated_to": serialize_user_for_response(incident.escalated_to),
+        
+        # Computed properties
+        "time_to_first_response": incident.time_to_first_response,
+        "time_to_containment": incident.time_to_containment,
+        "time_to_resolution": incident.time_to_resolution,
+        "alert_count": len(incident.alert_ids) if incident.alert_ids else 0,
+        "is_sla_breached": incident.sla_breached or False,
+    }
+    
+    return incident_dict
+
+
 class IncidentWebSocketManager:
     """Manages WebSocket connections for real-time incident updates"""
     
@@ -95,34 +213,36 @@ class IncidentWebSocketManager:
             await self._send_to_user(user_id, {
                 "type": "initial_data",
                 "data": {
-                    "owned_incidents": [incident.dict() for incident in owned_incidents],
+                    "owned_incidents": owned_incidents,
                     "connection_time": datetime.utcnow().isoformat()
                 }
             })
             
-            # Send recent unassigned alerts
+            # Send recent unassigned alerts (similar fix needed for alerts)
             recent_alerts = await self._get_recent_alerts(db, limit=50)
             await self._send_to_user(user_id, {
                 "type": "recent_alerts",
                 "data": {
-                    "alerts": [alert.dict() for alert in recent_alerts]
+                    "alerts": [alert.model_dump() for alert in recent_alerts]  # Fixed for Pydantic v2
                 }
             })
             
         except Exception as e:
             logger.error(f"Error sending initial data to user {user_id}: {e}")
     
-    async def _get_user_owned_incidents(self, user_id: int, db: Session) -> List[IncidentResponse]:
+    async def _get_user_owned_incidents(self, user_id: int, db: Session) -> List[Dict[str, Any]]:
         """Get incidents owned by user"""
         incidents = db.query(Incident).filter(
             Incident.owner_id == user_id,
             Incident.status != IncidentStatus.CLOSED
         ).options(
             joinedload(Incident.owner),
-            joinedload(Incident.assigned_analyst)
+            joinedload(Incident.assigned_analyst),
+            joinedload(Incident.escalated_to)
         ).order_by(desc(Incident.created_at)).all()
         
-        return [IncidentResponse.from_orm(incident) for incident in incidents]
+        # Convert to properly serialized dictionaries
+        return [create_incident_response_dict(incident) for incident in incidents]
     
     async def _get_recent_alerts(self, db: Session, limit: int = 50) -> List[AlertResponse]:
         """Get recent alerts that could become incidents"""
@@ -158,7 +278,7 @@ class IncidentWebSocketManager:
         alert_data = AlertResponse.from_orm(alert)
         message = {
             "type": "new_alert",
-            "data": alert_data.dict()
+            "data": alert_data.model_dump()
         }
         
         # Send to all connected users
@@ -170,7 +290,7 @@ class IncidentWebSocketManager:
         alert_data = AlertResponse.from_orm(alert)
         message = {
             "type": "alert_updated",
-            "data": alert_data.dict()
+            "data": alert_data.model_dump()
         }
         
         # Send to all connected users
@@ -250,7 +370,7 @@ class IncidentWebSocketManager:
         incident_data = IncidentResponse.from_orm(incident)
         message = {
             "type": "incident_created",
-            "data": incident_data.dict()
+            "data": incident_data.model_dump()
         }
         
         # Send to the owner
@@ -267,7 +387,7 @@ class IncidentWebSocketManager:
                     "type": "incident_notification",
                     "data": {
                         "message": f"New incident {incident.incident_id} created by {incident.owner.username}",
-                        "incident": incident_data.dict()
+                        "incident": incident_data.model_dump()
                     }
                 })
     
@@ -276,7 +396,7 @@ class IncidentWebSocketManager:
         incident_data = IncidentResponse.from_orm(incident)
         message = {
             "type": "incident_updated",
-            "data": incident_data.dict()
+            "data": incident_data.model_dump()
         }
         
         await self._broadcast_to_watchers(incident.id, message)
@@ -285,7 +405,6 @@ class IncidentWebSocketManager:
         """Handle incoming WebSocket messages"""
         try:
             message_type = message.get("type")
-            data = message.get("data", {})
             
             if message_type == "ping":
                 # Update last ping time
@@ -293,41 +412,12 @@ class IncidentWebSocketManager:
                     self.active_connections[user_id]["last_ping"] = datetime.utcnow()
                 await self._send_to_user(user_id, {"type": "pong"})
             
-            elif message_type == "take_ownership":
-                alert_id = data.get("alert_id")
-                if not alert_id:
-                    raise ValueError("alert_id is required")
-                
-                incident = await self.handle_take_ownership(alert_id, user_id, db)
-                await self._send_to_user(user_id, {
-                    "type": "ownership_taken",
-                    "data": {
-                        "success": True,
-                        "incident_id": incident.id,
-                        "incident": IncidentResponse.from_orm(incident).dict()
-                    }
-                })
-            
-            elif message_type == "watch_incident":
-                incident_id = data.get("incident_id")
-                if incident_id:
-                    if incident_id not in self.incident_watchers:
-                        self.incident_watchers[incident_id] = set()
-                    self.incident_watchers[incident_id].add(user_id)
-            
-            elif message_type == "unwatch_incident":
-                incident_id = data.get("incident_id")
-                if incident_id and incident_id in self.incident_watchers:
-                    self.incident_watchers[incident_id].discard(user_id)
-                    if not self.incident_watchers[incident_id]:
-                        del self.incident_watchers[incident_id]
-            
             elif message_type == "get_owned_incidents":
                 owned_incidents = await self._get_user_owned_incidents(user_id, db)
                 await self._send_to_user(user_id, {
                     "type": "owned_incidents",
                     "data": {
-                        "incidents": [incident.dict() for incident in owned_incidents]
+                        "incidents": owned_incidents
                     }
                 })
             
@@ -336,9 +426,33 @@ class IncidentWebSocketManager:
                 await self._send_to_user(user_id, {
                     "type": "recent_alerts",
                     "data": {
-                        "alerts": [alert.dict() for alert in recent_alerts]
+                        "alerts": [alert.model_dump() for alert in recent_alerts]  # Fixed for Pydantic v2
                     }
                 })
+            
+            elif message_type == "take_alert_ownership":
+                # Handle taking ownership of an alert
+                alert_id = message.get("data", {}).get("alert_id")
+                if alert_id:
+                    try:
+                        incident = await self.handle_take_ownership(alert_id, user_id, db)
+                        await self._send_to_user(user_id, {
+                            "type": "alert_ownership_taken",
+                            "data": {
+                                "alert_id": alert_id,
+                                "incident": create_incident_response_dict(incident) if incident else None
+                            }
+                        })
+                    except Exception as e:
+                        await self._send_to_user(user_id, {
+                            "type": "error",
+                            "data": {"message": str(e)}
+                        })
+                else:
+                    await self._send_to_user(user_id, {
+                        "type": "error",
+                        "data": {"message": "alert_id required for take_alert_ownership"}
+                    })
             
             else:
                 logger.warning(f"Unknown message type: {message_type}")
@@ -362,27 +476,59 @@ async def websocket_endpoint(websocket: WebSocket):
         # Get database session
         db = next(get_db())
         
-        # Authenticate user (you may need to implement token-based auth)
-        # For now, we'll use a simple approach - you can enhance this
+        # Get token from query parameters
         token = websocket.query_params.get("token")
         if not token:
             await websocket.close(code=4001, reason="Authentication required")
             return
         
         try:
+            # Decode and validate JWT token
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            
+            # Validate required claims
             username = payload.get("sub")
+            token_type = payload.get("type")
+            exp = payload.get("exp")
+            
             if not username:
-                await websocket.close(code=4001, reason="Invalid token")
+                await websocket.close(code=4001, reason="Invalid token: missing subject")
+                return
+                
+            if token_type != "access":
+                await websocket.close(code=4001, reason="Invalid token: wrong token type")
                 return
             
+            # Check if token is expired (redundant but explicit)
+            if exp and datetime.utcnow().timestamp() > exp:
+                await websocket.close(code=4001, reason="Token expired")
+                return
+            
+            # Get user from database
             user = db.query(User).filter(User.username == username).first()
             if not user:
                 await websocket.close(code=4001, reason="User not found")
                 return
+            
+            # Check if user account is active and not locked
+            if not user.is_active:
+                await websocket.close(code=4001, reason="User account is inactive")
+                return
                 
-        except jwt.PyJWTError:
+            if user.is_account_locked:
+                await websocket.close(code=4001, reason="User account is locked")
+                return
+                
+        except jwt.ExpiredSignatureError:
+            await websocket.close(code=4001, reason="Token expired")
+            return
+        except jwt.InvalidTokenError as e:
+            logger.warning(f"Invalid JWT token for WebSocket: {str(e)}")
             await websocket.close(code=4001, reason="Invalid token")
+            return
+        except Exception as e:
+            logger.error(f"Token validation error: {str(e)}")
+            await websocket.close(code=4003, reason="Authentication error")
             return
         
         # Connect to WebSocket manager
@@ -403,7 +549,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "data": {"message": "Invalid JSON"}
                 }))
             except Exception as e:
-                logger.error(f"WebSocket error: {e}")
+                logger.error(f"WebSocket message handling error: {e}")
                 await websocket.send_text(json.dumps({
                     "type": "error",
                     "data": {"message": "Internal error"}
@@ -411,6 +557,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 
     except Exception as e:
         logger.error(f"WebSocket connection error: {e}")
+        try:
+            await websocket.close(code=4003, reason="Internal server error")
+        except:
+            pass
     finally:
         if user:
             await websocket_manager.disconnect(user.id)
