@@ -36,6 +36,63 @@ def serialize_user_for_response(user) -> Dict[str, Any]:
         "last_login": user.last_login.isoformat() if user.last_login else None
     }
 
+def create_alert_response_dict(alert) -> Dict[str, Any]:
+    """Create a properly serialized alert response dictionary"""
+    return {
+        "id": alert.id,
+        "external_alert_id": alert.external_alert_id,
+        "title": alert.title,
+        "description": alert.description,
+        "severity": alert.severity,
+        "source": alert.source,
+        "threat_type": alert.threat_type,
+        "detected_at": alert.detected_at,
+        "source_system": alert.source_system,
+        "rule_id": alert.rule_id,
+        "rule_name": alert.rule_name,
+        "source_ip": alert.source_ip,
+        "destination_ip": alert.destination_ip,
+        "source_port": alert.source_port,
+        "destination_port": alert.destination_port,
+        "protocol": alert.protocol,
+        "affected_hostname": alert.affected_hostname,
+        "affected_user": alert.affected_user,
+        "asset_criticality": alert.asset_criticality,
+        "status": alert.status,
+        "confidence_score": alert.confidence_score,
+        "risk_score": alert.risk_score,
+        "assigned_analyst_id": alert.assigned_analyst_id,
+        "incident_id": alert.incident_id,
+        "playbook_execution_id": alert.playbook_execution_id,
+        "correlation_id": alert.correlation_id,
+        "parent_alert_id": alert.parent_alert_id,
+        "enrichment_data": alert.enrichment_data or {},
+        "investigation_notes": alert.investigation_notes,
+        "analyst_comments": alert.analyst_comments,
+        "reported": alert.reported,
+        "reported_at": alert.reported_at,
+        "reported_to": alert.reported_to or [],
+        "false_positive": alert.false_positive,
+        "false_positive_reason": alert.false_positive_reason,
+        "business_impact": alert.business_impact,
+        "data_classification": alert.data_classification,
+        "estimated_financial_impact": alert.estimated_financial_impact,
+        "requires_notification": alert.requires_notification,
+        "notification_deadline": alert.notification_deadline,
+        "compliance_notes": alert.compliance_notes,
+        "received_at": alert.received_at,
+        "created_at": alert.created_at,
+        "updated_at": alert.updated_at,
+        "closed_at": alert.closed_at,
+        "first_response_at": alert.first_response_at,
+        "containment_at": alert.containment_at,
+        "resolution_at": alert.resolution_at,
+        "assigned_analyst": serialize_user_for_response(alert.assigned_analyst),
+        "is_overdue": alert.is_overdue,
+        "time_to_first_response": alert.time_to_first_response,
+        "time_to_resolution": alert.time_to_resolution
+    }
+
 def create_incident_response_dict(incident) -> Dict[str, Any]:
     """Create a properly serialized incident response dictionary"""
     
@@ -218,12 +275,12 @@ class IncidentWebSocketManager:
                 }
             })
             
-            # Send recent unassigned alerts (similar fix needed for alerts)
+            # Send recent unassigned alerts
             recent_alerts = await self._get_recent_alerts(db, limit=50)
             await self._send_to_user(user_id, {
                 "type": "recent_alerts",
                 "data": {
-                    "alerts": [alert.model_dump() for alert in recent_alerts]  # Fixed for Pydantic v2
+                    "alerts": recent_alerts  # Already serialized dictionaries
                 }
             })
             
@@ -244,7 +301,7 @@ class IncidentWebSocketManager:
         # Convert to properly serialized dictionaries
         return [create_incident_response_dict(incident) for incident in incidents]
     
-    async def _get_recent_alerts(self, db: Session, limit: int = 50) -> List[AlertResponse]:
+    async def _get_recent_alerts(self, db: Session, limit: int = 50) -> List[Dict[str, Any]]:
         """Get recent alerts that could become incidents"""
         alerts = db.query(Alert).filter(
             Alert.status.in_([AlertStatus.NEW, AlertStatus.TRIAGED]),
@@ -253,7 +310,8 @@ class IncidentWebSocketManager:
             joinedload(Alert.assigned_analyst)
         ).order_by(desc(Alert.received_at)).limit(limit).all()
         
-        return [AlertResponse.from_orm(alert) for alert in alerts]
+        # Convert to properly serialized dictionaries
+        return [create_alert_response_dict(alert) for alert in alerts]
     
     async def _send_to_user(self, user_id: int, message: dict):
         """Send message to a specific user"""
@@ -275,10 +333,11 @@ class IncidentWebSocketManager:
     
     async def broadcast_new_alert(self, alert: Alert, db: Session):
         """Broadcast a new alert to all connected users"""
-        alert_data = AlertResponse.from_orm(alert)
+        alert_dict = create_alert_response_dict(alert)
+        
         message = {
             "type": "new_alert",
-            "data": alert_data.model_dump()
+            "data": alert_dict
         }
         
         # Send to all connected users
@@ -287,10 +346,11 @@ class IncidentWebSocketManager:
     
     async def broadcast_alert_update(self, alert: Alert, db: Session):
         """Broadcast alert update (status change, assignment, etc.)"""
-        alert_data = AlertResponse.from_orm(alert)
+        alert_dict = create_alert_response_dict(alert)
+        
         message = {
             "type": "alert_updated",
-            "data": alert_data.model_dump()
+            "data": alert_dict
         }
         
         # Send to all connected users
@@ -426,7 +486,7 @@ class IncidentWebSocketManager:
                 await self._send_to_user(user_id, {
                     "type": "recent_alerts",
                     "data": {
-                        "alerts": [alert.model_dump() for alert in recent_alerts]  # Fixed for Pydantic v2
+                        "alerts": recent_alerts  # Already serialized dictionaries
                     }
                 })
             
@@ -452,6 +512,101 @@ class IncidentWebSocketManager:
                     await self._send_to_user(user_id, {
                         "type": "error",
                         "data": {"message": "alert_id required for take_alert_ownership"}
+                    })
+            
+            elif message_type == "take_ownership":
+                # Handle taking ownership of an alert (alternative message type)
+                alert_id = message.get("data", {}).get("alert_id")
+                if alert_id:
+                    try:
+                        incident = await self.handle_take_ownership(alert_id, user_id, db)
+                        await self._send_to_user(user_id, {
+                            "type": "alert_ownership_taken",
+                            "data": {
+                                "alert_id": alert_id,
+                                "incident": create_incident_response_dict(incident) if incident else None
+                            }
+                        })
+                    except Exception as e:
+                        await self._send_to_user(user_id, {
+                            "type": "error",
+                            "data": {"message": str(e)}
+                        })
+                else:
+                    await self._send_to_user(user_id, {
+                        "type": "error",
+                        "data": {"message": "alert_id required for take_ownership"}
+                    })
+            
+            elif message_type == "update_alert_status":
+                # Handle alert status updates
+                alert_id = message.get("data", {}).get("alert_id")
+                new_status = message.get("data", {}).get("status")
+                if alert_id and new_status:
+                    try:
+                        # Update alert status in database
+                        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+                        if alert:
+                            alert.status = new_status
+                            alert.updated_at = datetime.utcnow()
+                            db.commit()
+                            
+                            # Broadcast the update to all connected users
+                            await self.broadcast_alert_update(alert, db)
+                            
+                            await self._send_to_user(user_id, {
+                                "type": "alert_status_updated",
+                                "data": {
+                                    "alert_id": alert_id,
+                                    "status": new_status
+                                }
+                            })
+                        else:
+                            await self._send_to_user(user_id, {
+                                "type": "error",
+                                "data": {"message": f"Alert {alert_id} not found"}
+                            })
+                    except Exception as e:
+                        await self._send_to_user(user_id, {
+                            "type": "error",
+                            "data": {"message": str(e)}
+                        })
+                else:
+                    await self._send_to_user(user_id, {
+                        "type": "error",
+                        "data": {"message": "alert_id and status required for update_alert_status"}
+                    })
+            
+            elif message_type == "get_alert_details":
+                # Handle getting detailed alert information
+                alert_id = message.get("data", {}).get("alert_id")
+                if alert_id:
+                    try:
+                        alert = db.query(Alert).options(
+                            joinedload(Alert.assigned_analyst)
+                        ).filter(Alert.id == alert_id).first()
+                        
+                        if alert:
+                            alert_dict = create_alert_response_dict(alert)
+                            
+                            await self._send_to_user(user_id, {
+                                "type": "alert_details",
+                                "data": alert_dict
+                            })
+                        else:
+                            await self._send_to_user(user_id, {
+                                "type": "error",
+                                "data": {"message": f"Alert {alert_id} not found"}
+                            })
+                    except Exception as e:
+                        await self._send_to_user(user_id, {
+                            "type": "error",
+                            "data": {"message": str(e)}
+                        })
+                else:
+                    await self._send_to_user(user_id, {
+                        "type": "error",
+                        "data": {"message": "alert_id required for get_alert_details"}
                     })
             
             else:
