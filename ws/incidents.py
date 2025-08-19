@@ -404,6 +404,12 @@ class IncidentWebSocketManager:
             db.commit()
             db.refresh(incident)
             
+            # CRITICAL FIX: Re-query the alert with the assigned_analyst relationship loaded
+            # This ensures the assigned_analyst field can be properly serialized
+            alert = db.query(Alert).options(
+                joinedload(Alert.assigned_analyst)
+            ).filter(Alert.id == alert_id).first()
+            
             # Update user's owned incidents
             if user_id not in self.user_owned_incidents:
                 self.user_owned_incidents[user_id] = set()
@@ -414,12 +420,12 @@ class IncidentWebSocketManager:
                 self.incident_watchers[incident.id] = set()
             self.incident_watchers[incident.id].add(user_id)
             
-            # Broadcast updates
+            # Broadcast updates (now with properly loaded relationship)
             await self.broadcast_alert_update(alert, db)
             await self.broadcast_incident_created(incident, db)
             
             return incident
-            
+        
         except Exception as e:
             db.rollback()
             logger.error(f"Error taking ownership of alert {alert_id}: {e}")
@@ -427,10 +433,10 @@ class IncidentWebSocketManager:
     
     async def broadcast_incident_created(self, incident: Incident, db: Session):
         """Broadcast new incident creation"""
-        incident_data = IncidentResponse.from_orm(incident)
+        incident_data = create_incident_response_dict(incident)
         message = {
             "type": "incident_created",
-            "data": incident_data.model_dump()
+            "data": incident_data
         }
         
         # Send to the owner
@@ -447,16 +453,17 @@ class IncidentWebSocketManager:
                     "type": "incident_notification",
                     "data": {
                         "message": f"New incident {incident.incident_id} created by {incident.owner.username}",
-                        "incident": incident_data.model_dump()
+                        "incident": incident_data
                     }
                 })
     
     async def broadcast_incident_update(self, incident: Incident, db: Session):
         """Broadcast incident updates to watchers"""
-        incident_data = IncidentResponse.from_orm(incident)
+        # Use the helper function instead of IncidentResponse.from_orm()
+        incident_data = create_incident_response_dict(incident)
         message = {
             "type": "incident_updated",
-            "data": incident_data.model_dump()
+            "data": incident_data
         }
         
         await self._broadcast_to_watchers(incident.id, message)
