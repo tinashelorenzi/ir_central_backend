@@ -15,7 +15,7 @@ from schemas import (
     EndpointTokenCreate, EndpointTokenUpdate
 )
 
-router = APIRouter(prefix="/endpoint-tokens", tags=["Endpoint Tokens"])
+router = APIRouter(prefix="/api/v1/endpoint-tokens", tags=["Endpoint Tokens"])
 
 # ============================================================================
 # PYDANTIC SCHEMAS

@@ -87,8 +87,8 @@ async def root():
 # Include routers
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(playbook_router, prefix="/api/v1")
-app.include_router(endpoint_tokens_router, prefix="/api/v1")
-app.include_router(alert_router, prefix="/api/v1")
+app.include_router(endpoint_tokens_router)
+app.include_router(alert_router)
 
 if __name__ == "__main__":
     import uvicorn
