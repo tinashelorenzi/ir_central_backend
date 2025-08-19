@@ -9,6 +9,11 @@ from database import get_db
 from auth_utils import get_current_user, require_admin, require_manager_or_above
 from models.users import User
 from models.endpoint_tokens import EndpointToken
+from schemas import (
+    EndpointTokenResponse, EndpointTokenCreateResponse, 
+    TokenValidationResponse, PaginatedTokenResponse,
+    EndpointTokenCreate, EndpointTokenUpdate
+)
 
 router = APIRouter(prefix="/endpoint-tokens", tags=["Endpoint Tokens"])
 
@@ -16,106 +21,9 @@ router = APIRouter(prefix="/endpoint-tokens", tags=["Endpoint Tokens"])
 # PYDANTIC SCHEMAS
 # ============================================================================
 
-class EndpointTokenCreate(BaseModel):
-    """Schema for creating a new endpoint token"""
-    token_name: str = Field(..., min_length=1, max_length=100, description="Name for the token")
-    description: Optional[str] = Field(None, max_length=500, description="Description of the token's purpose")
-    
-    # Permissions
-    can_create_alerts: bool = Field(True, description="Allow creating alerts")
-    can_update_alerts: bool = Field(False, description="Allow updating alerts")
-    can_read_alerts: bool = Field(True, description="Allow reading alerts")
-    
-    # Rate limiting
-    rate_limit_per_minute: int = Field(100, ge=1, le=1000, description="Requests per minute limit")
-    
-    # Expiration (optional)
-    expires_in_days: Optional[int] = Field(None, ge=1, le=365, description="Token expiration in days")
-    
-    # Access restrictions (optional)
-    allowed_ips: Optional[List[str]] = Field(None, description="List of allowed IP addresses/ranges")
-    allowed_sources: Optional[List[str]] = Field(None, description="List of allowed source systems")
 
-class EndpointTokenUpdate(BaseModel):
-    """Schema for updating an endpoint token"""
-    token_name: Optional[str] = Field(None, min_length=1, max_length=100)
-    description: Optional[str] = Field(None, max_length=500)
-    
-    # Permissions
-    can_create_alerts: Optional[bool] = None
-    can_update_alerts: Optional[bool] = None
-    can_read_alerts: Optional[bool] = None
-    
-    # Rate limiting
-    rate_limit_per_minute: Optional[int] = Field(None, ge=1, le=1000)
-    
-    # Status
-    is_active: Optional[bool] = None
-    
-    # Expiration
-    expires_in_days: Optional[int] = Field(None, ge=1, le=365, description="Extend expiration by days from now")
-    
-    # Access restrictions
-    allowed_ips: Optional[List[str]] = None
-    allowed_sources: Optional[List[str]] = None
 
-class EndpointTokenResponse(BaseModel):
-    """Schema for endpoint token responses (without the actual token)"""
-    id: int
-    token_name: str
-    token_prefix: str  # First 8 characters for identification
-    description: Optional[str]
-    
-    # Status
-    is_active: bool
-    expires_at: Optional[datetime]
-    is_expired: bool
-    
-    # Permissions
-    can_create_alerts: bool
-    can_update_alerts: bool
-    can_read_alerts: bool
-    
-    # Rate limiting
-    rate_limit_per_minute: int
-    
-    # Usage statistics
-    total_requests: int
-    last_used_at: Optional[datetime]
-    
-    # Audit
-    created_by_id: int
-    created_at: datetime
-    updated_at: datetime
-    
-    # Access restrictions
-    allowed_ips: Optional[List[str]]
-    allowed_sources: Optional[List[str]]
-    
-    class Config:
-        from_attributes = True
 
-class EndpointTokenCreateResponse(BaseModel):
-    """Schema for token creation response (includes the actual token once)"""
-    token: str  # The actual token - only shown once
-    token_info: EndpointTokenResponse
-
-class TokenValidationResponse(BaseModel):
-    """Schema for token validation response"""
-    valid: bool
-    token_id: Optional[int] = None
-    token_name: Optional[str] = None
-    permissions: Optional[dict] = None
-    rate_limit_remaining: Optional[int] = None
-    expires_at: Optional[datetime] = None
-
-class PaginatedTokenResponse(BaseModel):
-    """Paginated response for tokens"""
-    items: List[EndpointTokenResponse]
-    total: int
-    page: int
-    size: int
-    pages: int
 
 # ============================================================================
 # ENDPOINT TOKEN ROUTES
@@ -174,9 +82,29 @@ async def create_endpoint_token(
     db.commit()
     db.refresh(token)
     
-    # Prepare response
-    token_response = EndpointTokenResponse.model_validate(token)
-    token_response.is_expired = token.is_expired()
+    # Prepare response - exclude is_expired from validation since it's a method
+    token_data = {
+        'id': token.id,
+        'token_name': token.token_name,
+        'token_prefix': token.token_prefix,
+        'description': token.description,
+        'is_active': token.is_active,
+        'expires_at': token.expires_at,
+        'is_expired': token.is_expired(),  # Call the method to get boolean value
+        'can_create_alerts': token.can_create_alerts,
+        'can_update_alerts': token.can_update_alerts,
+        'can_read_alerts': token.can_read_alerts,
+        'rate_limit_per_minute': token.rate_limit_per_minute,
+        'total_requests': token.total_requests,
+        'last_used_at': token.last_used_at,
+        'created_by_id': token.created_by_id,
+        'created_at': token.created_at,
+        'updated_at': token.updated_at,
+        'allowed_ips': None,
+        'allowed_sources': None,
+        'created_by': None
+    }
+    token_response = EndpointTokenResponse(**token_data)
     
     # Parse JSON fields for response
     if token.allowed_ips:
@@ -228,8 +156,29 @@ async def list_endpoint_tokens(
     # Convert to response format
     token_responses = []
     for token in tokens:
-        token_response = EndpointTokenResponse.model_validate(token)
-        token_response.is_expired = token.is_expired()
+        # Prepare token data - exclude is_expired from validation since it's a method
+        token_data = {
+            'id': token.id,
+            'token_name': token.token_name,
+            'token_prefix': token.token_prefix,
+            'description': token.description,
+            'is_active': token.is_active,
+            'expires_at': token.expires_at,
+            'is_expired': token.is_expired(),  # Call the method to get boolean value
+            'can_create_alerts': token.can_create_alerts,
+            'can_update_alerts': token.can_update_alerts,
+            'can_read_alerts': token.can_read_alerts,
+            'rate_limit_per_minute': token.rate_limit_per_minute,
+            'total_requests': token.total_requests,
+            'last_used_at': token.last_used_at,
+            'created_by_id': token.created_by_id,
+            'created_at': token.created_at,
+            'updated_at': token.updated_at,
+            'allowed_ips': None,
+            'allowed_sources': None,
+            'created_by': None
+        }
+        token_response = EndpointTokenResponse(**token_data)
         
         # Parse JSON fields
         if token.allowed_ips:
@@ -267,8 +216,29 @@ async def get_endpoint_token(
             detail="Token not found"
         )
     
-    token_response = EndpointTokenResponse.model_validate(token)
-    token_response.is_expired = token.is_expired()
+    # Prepare token data - exclude is_expired from validation since it's a method
+    token_data = {
+        'id': token.id,
+        'token_name': token.token_name,
+        'token_prefix': token.token_prefix,
+        'description': token.description,
+        'is_active': token.is_active,
+        'expires_at': token.expires_at,
+        'is_expired': token.is_expired(),  # Call the method to get boolean value
+        'can_create_alerts': token.can_create_alerts,
+        'can_update_alerts': token.can_update_alerts,
+        'can_read_alerts': token.can_read_alerts,
+        'rate_limit_per_minute': token.rate_limit_per_minute,
+        'total_requests': token.total_requests,
+        'last_used_at': token.last_used_at,
+        'created_by_id': token.created_by_id,
+        'created_at': token.created_at,
+        'updated_at': token.updated_at,
+        'allowed_ips': None,
+        'allowed_sources': None,
+        'created_by': None
+    }
+    token_response = EndpointTokenResponse(**token_data)
     
     # Parse JSON fields
     if token.allowed_ips:
@@ -318,8 +288,29 @@ async def update_endpoint_token(
     db.commit()
     db.refresh(token)
     
-    token_response = EndpointTokenResponse.model_validate(token)
-    token_response.is_expired = token.is_expired()
+    # Prepare token data - exclude is_expired from validation since it's a method
+    token_data = {
+        'id': token.id,
+        'token_name': token.token_name,
+        'token_prefix': token.token_prefix,
+        'description': token.description,
+        'is_active': token.is_active,
+        'expires_at': token.expires_at,
+        'is_expired': token.is_expired(),  # Call the method to get boolean value
+        'can_create_alerts': token.can_create_alerts,
+        'can_update_alerts': token.can_update_alerts,
+        'can_read_alerts': token.can_read_alerts,
+        'rate_limit_per_minute': token.rate_limit_per_minute,
+        'total_requests': token.total_requests,
+        'last_used_at': token.last_used_at,
+        'created_by_id': token.created_by_id,
+        'created_at': token.created_at,
+        'updated_at': token.updated_at,
+        'allowed_ips': None,
+        'allowed_sources': None,
+        'created_by': None
+    }
+    token_response = EndpointTokenResponse(**token_data)
     
     # Parse JSON fields
     if token.allowed_ips:

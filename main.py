@@ -51,7 +51,7 @@ async def global_exception_handler(request, exc):
         content=ErrorResponse(
             error="Internal server error",
             detail=str(exc)
-        ).dict()
+        ).model_dump()
     )
 
 # Health check endpoint
