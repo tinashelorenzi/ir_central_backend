@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
@@ -11,6 +11,8 @@ from siem_routes.playbooks import router as playbook_router
 from siem_routes.endpoint_tokens import router as endpoint_tokens_router
 from routes.alert import router as alert_router
 from schemas import HealthCheck, ErrorResponse
+from websockets.incidents import websocket_endpoint, cleanup_connections_task
+import asyncio
 
 # Create database tables
 def create_tables():
@@ -22,8 +24,15 @@ async def lifespan(app: FastAPI):
     # Startup
     create_tables()
     print("Database tables created successfully")
+    # Start cleanup task
+    # cleanup_task = asyncio.create_task(cleanup_connections_task())
     yield
     # Shutdown
+    # cleanup_task.cancel()
+    # try:
+    #     await cleanup_task
+    # except asyncio.CancelledError:
+    #     pass
     print("Application shutting down")
 
 # Create FastAPI app
@@ -83,6 +92,13 @@ async def root():
         "docs": "/docs",
         "health": "/health"
     }
+
+# Websockets
+# @app.websocket("/ws/incidents")
+# async def incidents_websocket(websocket: WebSocket):
+#     await websocket_endpoint(websocket)
+
+
 
 # Include routers
 app.include_router(auth_router, prefix="/api/v1")

@@ -63,6 +63,9 @@ class User(Base):
     created_tokens = relationship("EndpointToken", back_populates="created_by")
     assigned_alerts = relationship("Alert", foreign_keys="[Alert.assigned_analyst_id]")
     collected_artifacts = relationship("AlertArtifact", foreign_keys="[AlertArtifact.collected_by_id]")
+
+    owned_incidents = relationship("Incident", foreign_keys="Incident.owner_id", back_populates="owner")
+    assigned_incidents = relationship("Incident", foreign_keys="Incident.assigned_analyst_id", back_populates="assigned_analyst")
     
     def __repr__(self):
         return f"<User(username='{self.username}', role='{self.role}', active={self.is_active})>"

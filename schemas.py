@@ -4,6 +4,7 @@ from datetime import datetime
 from models.users import UserRole
 from models.playbook import PlaybookStatus, StepType, InputFieldType
 from models.alert import AlertSeverity, AlertStatus, AlertSource, ThreatType
+from models.incident import IncidentSeverity, IncidentStatus, IncidentPriority, IncidentCategory
 
 # Authentication schemas
 class Token(BaseModel):
@@ -1052,3 +1053,361 @@ class TokenAuditSearchRequest(BaseModel):
     
     # Sorting
     sort_order: str = Field("desc", pattern="^(asc|desc)$")
+
+# === INCIDENT SCHEMAS ===
+class IncidentBase(BaseModel):
+    """Base incident fields"""
+    title: str = Field(..., min_length=1, max_length=500)
+    description: Optional[str] = None
+    severity: IncidentSeverity = IncidentSeverity.MEDIUM
+    priority: IncidentPriority = IncidentPriority.P3
+    category: IncidentCategory = IncidentCategory.UNKNOWN
+    assigned_team: Optional[str] = None
+
+class IncidentCreate(IncidentBase):
+    """Schema for creating a new incident"""
+    alert_ids: Optional[List[int]] = Field(default_factory=list)
+    affected_systems: Optional[List[str]] = Field(default_factory=list)
+    affected_users: Optional[List[str]] = Field(default_factory=list)
+    affected_services: Optional[List[str]] = Field(default_factory=list)
+    
+    @validator('alert_ids')
+    def validate_alert_ids(cls, v):
+        if v and len(v) > 50:  # Reasonable limit
+            raise ValueError('Too many alerts for a single incident')
+        return v
+
+class IncidentUpdate(BaseModel):
+    """Schema for updating incidents"""
+    title: Optional[str] = Field(None, min_length=1, max_length=500)
+    description: Optional[str] = None
+    severity: Optional[IncidentSeverity] = None
+    priority: Optional[IncidentPriority] = None
+    status: Optional[IncidentStatus] = None
+    category: Optional[IncidentCategory] = None
+    assigned_analyst_id: Optional[int] = None
+    assigned_team: Optional[str] = None
+    escalated_to_id: Optional[int] = None
+    
+    # Investigation updates
+    investigation_summary: Optional[str] = None
+    investigation_notes: Optional[str] = None
+    
+    # Impact assessment
+    business_impact: Optional[str] = None
+    estimated_financial_loss: Optional[float] = Field(None, ge=0)
+    data_compromised: Optional[bool] = None
+    data_types_affected: Optional[List[str]] = None
+    systems_compromised: Optional[int] = Field(None, ge=0)
+    users_affected: Optional[int] = Field(None, ge=0)
+    
+    # Response actions
+    containment_strategy: Optional[str] = None
+    containment_actions: Optional[List[str]] = None
+    eradication_actions: Optional[List[str]] = None
+    recovery_actions: Optional[List[str]] = None
+    
+    # Compliance
+    requires_external_reporting: Optional[bool] = None
+    external_reporting_deadline: Optional[datetime] = None
+    reported_to_authorities: Optional[bool] = None
+    compliance_requirements: Optional[List[str]] = None
+    
+    # Post-incident
+    lessons_learned: Optional[str] = None
+    recommendations: Optional[List[str]] = None
+    follow_up_actions: Optional[List[str]] = None
+    
+    # Metadata
+    tags: Optional[List[str]] = None
+    custom_fields: Optional[Dict[str, Any]] = None
+
+class IncidentResponse(IncidentBase):
+    """Schema for incident responses"""
+    id: int
+    incident_id: str
+    status: IncidentStatus
+    
+    # Ownership
+    owner_id: int
+    assigned_analyst_id: Optional[int] = None
+    escalated_to_id: Optional[int] = None
+    
+    # Timing
+    created_at: datetime
+    updated_at: datetime
+    first_response_at: Optional[datetime] = None
+    contained_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    
+    # SLA tracking
+    response_sla_deadline: Optional[datetime] = None
+    resolution_sla_deadline: Optional[datetime] = None
+    sla_breached: bool = False
+    
+    # Related data
+    alert_ids: List[int] = Field(default_factory=list)
+    affected_systems: List[str] = Field(default_factory=list)
+    affected_users: List[str] = Field(default_factory=list)
+    affected_services: List[str] = Field(default_factory=list)
+    
+    # Investigation
+    investigation_summary: Optional[str] = None
+    investigation_notes: Optional[str] = None
+    incident_timeline: List[Dict[str, Any]] = Field(default_factory=list)
+    
+    # Impact
+    business_impact: Optional[str] = None
+    estimated_financial_loss: Optional[float] = None
+    data_compromised: bool = False
+    data_types_affected: List[str] = Field(default_factory=list)
+    systems_compromised: int = 0
+    users_affected: int = 0
+    
+    # Response
+    containment_strategy: Optional[str] = None
+    containment_actions: List[str] = Field(default_factory=list)
+    eradication_actions: List[str] = Field(default_factory=list)
+    recovery_actions: List[str] = Field(default_factory=list)
+    
+    # Playbook
+    playbook_execution_id: Optional[int] = None
+    automated_actions: List[str] = Field(default_factory=list)
+    
+    # Communication
+    internal_notifications: List[str] = Field(default_factory=list)
+    external_notifications: List[str] = Field(default_factory=list)
+    
+    # Compliance
+    requires_external_reporting: bool = False
+    external_reporting_deadline: Optional[datetime] = None
+    reported_to_authorities: bool = False
+    compliance_requirements: List[str] = Field(default_factory=list)
+    
+    # Post-incident
+    lessons_learned: Optional[str] = None
+    recommendations: List[str] = Field(default_factory=list)
+    follow_up_actions: List[str] = Field(default_factory=list)
+    post_incident_review_completed: bool = False
+    post_incident_review_notes: Optional[str] = None
+    post_incident_review_date: Optional[datetime] = None
+    
+    # Metadata
+    correlation_id: Optional[str] = None
+    parent_incident_id: Optional[int] = None
+    tags: List[str] = Field(default_factory=list)
+    custom_fields: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Relationships (simplified for response)
+    owner: Optional[Dict[str, Any]] = None
+    assigned_analyst: Optional[Dict[str, Any]] = None
+    escalated_to: Optional[Dict[str, Any]] = None
+    
+    # Computed properties
+    time_to_first_response: Optional[float] = None
+    time_to_containment: Optional[float] = None
+    time_to_resolution: Optional[float] = None
+    alert_count: int = 0
+    is_sla_breached: bool = False
+    
+    class Config:
+        from_attributes = True
+
+class IncidentSearchRequest(BaseModel):
+    """Schema for searching incidents"""
+    search: Optional[str] = None  # Search in title/description
+    severity: Optional[List[IncidentSeverity]] = None
+    status: Optional[List[IncidentStatus]] = None
+    priority: Optional[List[IncidentPriority]] = None
+    category: Optional[List[IncidentCategory]] = None
+    owner_id: Optional[int] = None
+    assigned_analyst_id: Optional[int] = None
+    assigned_team: Optional[str] = None
+    
+    # Time filters
+    created_after: Optional[datetime] = None
+    created_before: Optional[datetime] = None
+    updated_after: Optional[datetime] = None
+    updated_before: Optional[datetime] = None
+    
+    # SLA filters
+    sla_breached: Optional[bool] = None
+    overdue_response: Optional[bool] = None
+    overdue_resolution: Optional[bool] = None
+    
+    # Impact filters
+    data_compromised: Optional[bool] = None
+    business_impact: Optional[List[str]] = None
+    
+    # Compliance filters
+    requires_external_reporting: Optional[bool] = None
+    reported_to_authorities: Optional[bool] = None
+    
+    # Tags and metadata
+    tags: Optional[List[str]] = None
+    
+    # Pagination
+    page: int = Field(1, ge=1)
+    size: int = Field(20, ge=1, le=100)
+    
+    # Sorting
+    sort_by: Optional[str] = Field("created_at", pattern="^(created_at|updated_at|severity|priority|status)$")
+    sort_order: Optional[str] = Field("desc", pattern="^(asc|desc)$")
+
+class IncidentStatsResponse(BaseModel):
+    """Schema for incident statistics"""
+    total_incidents: int
+    open_incidents: int
+    closed_incidents: int
+    
+    # By status
+    new_incidents: int = 0
+    investigating_incidents: int = 0
+    contained_incidents: int = 0
+    resolved_incidents: int = 0
+    
+    # By severity
+    critical_incidents: int = 0
+    high_incidents: int = 0
+    medium_incidents: int = 0
+    low_incidents: int = 0
+    
+    # By priority
+    p1_incidents: int = 0
+    p2_incidents: int = 0
+    p3_incidents: int = 0
+    p4_incidents: int = 0
+    
+    # SLA metrics
+    sla_breached_incidents: int = 0
+    avg_response_time: Optional[float] = None
+    avg_resolution_time: Optional[float] = None
+    
+    # Compliance
+    incidents_requiring_reporting: int = 0
+    incidents_reported_to_authorities: int = 0
+
+# === INCIDENT NOTE SCHEMAS ===
+
+class IncidentNoteBase(BaseModel):
+    """Base incident note fields"""
+    content: str = Field(..., min_length=1)
+    note_type: str = Field("general", pattern="^(general|investigation|containment|communication|evidence)$")
+    is_internal: bool = True
+
+class IncidentNoteCreate(IncidentNoteBase):
+    """Schema for creating incident notes"""
+    incident_id: int
+
+class IncidentNoteResponse(IncidentNoteBase):
+    """Schema for incident note responses"""
+    id: int
+    incident_id: int
+    user_id: int
+    created_at: datetime
+    updated_at: datetime
+    
+    # Relationships
+    user: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        from_attributes = True
+
+# === INCIDENT ARTIFACT SCHEMAS ===
+
+class IncidentArtifactBase(BaseModel):
+    """Base incident artifact fields"""
+    filename: str = Field(..., min_length=1, max_length=255)
+    artifact_type: str = Field(..., pattern="^(evidence|screenshot|log|report|document)$")
+    description: Optional[str] = None
+
+class IncidentArtifactCreate(IncidentArtifactBase):
+    """Schema for creating incident artifacts"""
+    incident_id: int
+    file_path: str
+    file_size: Optional[int] = None
+    file_type: Optional[str] = None
+    file_hash_md5: Optional[str] = None
+    file_hash_sha1: Optional[str] = None
+    file_hash_sha256: Optional[str] = None
+
+class IncidentArtifactResponse(IncidentArtifactBase):
+    """Schema for incident artifact responses"""
+    id: int
+    incident_id: int
+    file_path: str
+    file_size: Optional[int] = None
+    file_type: Optional[str] = None
+    file_hash_md5: Optional[str] = None
+    file_hash_sha1: Optional[str] = None
+    file_hash_sha256: Optional[str] = None
+    
+    collected_by_id: int
+    collected_at: datetime
+    chain_of_custody: List[Dict[str, Any]] = Field(default_factory=list)
+    
+    # Relationships
+    collected_by: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        from_attributes = True
+
+# === INCIDENT OWNERSHIP SCHEMAS ===
+
+class TakeOwnershipRequest(BaseModel):
+    """Schema for taking ownership of alerts"""
+    alert_id: int
+    notes: Optional[str] = None
+
+class TakeOwnershipResponse(BaseModel):
+    """Schema for ownership response"""
+    success: bool
+    incident_id: int
+    incident: IncidentResponse
+    message: str
+
+# === WEBSOCKET MESSAGE SCHEMAS ===
+
+class WebSocketMessage(BaseModel):
+    """Base WebSocket message schema"""
+    type: str
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+class IncidentWebSocketUpdate(BaseModel):
+    """WebSocket update for incidents"""
+    type: str = Field(..., pattern="^(incident_created|incident_updated|incident_assigned|status_changed)$")
+    incident_id: int
+    incident: IncidentResponse
+    message: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class AlertWebSocketUpdate(BaseModel):
+    """WebSocket update for alerts"""
+    type: str = Field(..., pattern="^(new_alert|alert_updated|alert_assigned|ownership_taken)$")
+    alert_id: int
+    alert: AlertResponse
+    message: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+# === BULK OPERATIONS ===
+
+class BulkIncidentUpdate(BaseModel):
+    """Schema for bulk incident operations"""
+    incident_ids: List[int] = Field(..., min_items=1, max_items=50)
+    updates: IncidentUpdate
+
+class IncidentTimelineEvent(BaseModel):
+    """Schema for incident timeline events"""
+    timestamp: datetime
+    event: str
+    source: str
+    details: Optional[str] = None
+    user_id: Optional[int] = None
+
+class AddTimelineEventRequest(BaseModel):
+    """Schema for adding timeline events"""
+    incident_id: int
+    event: str = Field(..., min_length=1, max_length=500)
+    source: str = Field(..., min_length=1, max_length=100)
+    details: Optional[str] = None
