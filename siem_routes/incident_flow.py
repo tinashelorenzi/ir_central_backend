@@ -222,7 +222,7 @@ async def create_incident_flow(
     db.refresh(flow)
     
     # Initialize steps from playbook definition
-    background_tasks.add_task(initialize_flow_steps, flow.id, db)
+    background_tasks.add_task(initialize_flow_steps, flow.id)
     
     # Update playbook usage stats
     playbook.usage_count += 1
@@ -726,8 +726,8 @@ async def complete_step(
         step.actual_duration = int(duration)
     
     # Update flow progress
-    background_tasks.add_task(update_flow_progress, flow.id, db)
-    background_tasks.add_task(advance_to_next_step, flow.id, step.global_step_index, db)
+    background_tasks.add_task(update_flow_progress, flow.id)
+    background_tasks.add_task(advance_to_next_step, flow.id, step.global_step_index)
     
     flow.last_activity_at = datetime.utcnow()
     
@@ -1199,10 +1199,14 @@ async def get_incident_flow_response(flow: IncidentFlow, db: Session) -> Inciden
     
     return IncidentFlowResponse(**response_data)
 
-def initialize_flow_steps(flow_id: int, db: Session):
+def initialize_flow_steps(flow_id: int):
     """Initialize steps from playbook definition"""
     
-    with db() as session:
+    # Create a new database session for the background task
+    db_gen = get_db()
+    session = next(db_gen)
+    
+    try:
         flow = session.query(IncidentFlow).filter(IncidentFlow.id == flow_id).first()
         if not flow or not flow.playbook_snapshot:
             return
@@ -1238,11 +1242,22 @@ def initialize_flow_steps(flow_id: int, db: Session):
                 global_step_index += 1
         
         session.commit()
+        
+    except Exception as e:
+        session.rollback()
+        print(f"Error initializing flow steps: {e}")
+        raise
+    finally:
+        session.close()
 
-def update_flow_progress(flow_id: int, db: Session):
+def update_flow_progress(flow_id: int):
     """Update flow progress based on step completion"""
     
-    with db() as session:
+    # Create a new database session for the background task
+    db_gen = get_db()
+    session = next(db_gen)
+    
+    try:
         flow = session.query(IncidentFlow).filter(IncidentFlow.id == flow_id).first()
         if not flow:
             return
@@ -1263,53 +1278,88 @@ def update_flow_progress(flow_id: int, db: Session):
             IncidentFlowStep.status == StepStatus.SKIPPED
         ).count()
         
-        # Update counts
+        # Update flow progress
         flow.completed_steps = completed_steps
         flow.failed_steps = failed_steps
         flow.skipped_steps = skipped_steps
         
-        # Update progress percentage
-        flow.update_progress()
+        # Calculate progress percentage
+        if flow.total_steps > 0:
+            flow.progress_percentage = ((completed_steps + failed_steps + skipped_steps) / flow.total_steps) * 100
+        else:
+            flow.progress_percentage = 0.0
         
-        # Check if flow is complete
+        # Update flow status based on progress
         if completed_steps + failed_steps + skipped_steps >= flow.total_steps:
-            flow.status = IncidentFlowStatus.COMPLETED
+            if failed_steps > 0:
+                flow.status = IncidentFlowStatus.COMPLETED  # or FAILED based on your logic
+            else:
+                flow.status = IncidentFlowStatus.COMPLETED
             flow.completed_at = datetime.utcnow()
-            flow.progress_percentage = 100.0
         
+        flow.last_activity_at = datetime.utcnow()
         session.commit()
+        
+    except Exception as e:
+        session.rollback()
+        print(f"Error updating flow progress: {e}")
+        raise
+    finally:
+        session.close()
 
-def advance_to_next_step(flow_id: int, current_step_index: int, db: Session):
-    """Advance to the next available step"""
+def advance_to_next_step(flow_id: int, current_step_index: int):
+    """Advance to the next available step in the flow"""
     
-    with db() as session:
+    # Create a new database session for the background task
+    db_gen = get_db()
+    session = next(db_gen)
+    
+    try:
         flow = session.query(IncidentFlow).filter(IncidentFlow.id == flow_id).first()
         if not flow:
             return
         
-        # Find next pending step that can be executed
+        # Find the next executable step
         next_step = session.query(IncidentFlowStep).filter(
             IncidentFlowStep.flow_id == flow.id,
             IncidentFlowStep.global_step_index > current_step_index,
             IncidentFlowStep.status == StepStatus.PENDING
         ).order_by(IncidentFlowStep.global_step_index).first()
         
-        if next_step and next_step.can_execute:
-            # Update flow current step
-            flow.current_step_name = next_step.step_name
-            flow.current_phase = next_step.phase_name
-            
-            # Start the next step if it doesn't require manual intervention
-            if next_step.step_type != StepType.USER_INPUT and not next_step.requires_approval:
-                next_step.status = StepStatus.IN_PROGRESS
-                next_step.started_at = datetime.utcnow()
-            elif next_step.step_type == StepType.USER_INPUT:
-                next_step.status = StepStatus.WAITING_INPUT
-                flow.status = IncidentFlowStatus.WAITING_INPUT
-            elif next_step.requires_approval:
-                next_step.status = StepStatus.WAITING_APPROVAL
+        if next_step:
+            # Check if dependencies are met
+            if not next_step.depends_on_steps:
+                # No dependencies, can start immediately if it's automated
+                if next_step.is_automated:
+                    next_step.status = StepStatus.IN_PROGRESS
+                    next_step.started_at = datetime.utcnow()
+                    flow.current_step_name = next_step.step_name
+                    flow.current_phase = next_step.phase_name
+            else:
+                # Check dependencies
+                dependency_steps = session.query(IncidentFlowStep).filter(
+                    IncidentFlowStep.flow_id == flow.id,
+                    IncidentFlowStep.step_name.in_(next_step.depends_on_steps)
+                ).all()
+                
+                all_deps_completed = all(dep.status == StepStatus.COMPLETED for dep in dependency_steps)
+                
+                if all_deps_completed:
+                    if next_step.is_automated:
+                        next_step.status = StepStatus.IN_PROGRESS
+                        next_step.started_at = datetime.utcnow()
+                        flow.current_step_name = next_step.step_name
+                        flow.current_phase = next_step.phase_name
         
+        flow.last_activity_at = datetime.utcnow()
         session.commit()
+        
+    except Exception as e:
+        session.rollback()
+        print(f"Error advancing to next step: {e}")
+        raise
+    finally:
+        session.close()
 
 def get_phase_summary(steps):
     """Generate summary metrics by phase"""
