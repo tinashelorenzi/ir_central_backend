@@ -1991,3 +1991,23 @@ class StepValidationResult(BaseModel):
     blocking_dependencies: List[str] = Field(description="Dependencies preventing execution")
     errors: List[str]
     warnings: List[str]
+
+class FlowCompletionRequest(BaseModel):
+    """Schema for completing a flow with status selection"""
+    final_report: str = Field(..., min_length=10, max_length=5000, description="Final incident report")
+    alert_disposition: str = Field(..., description="Alert disposition: false_positive, resolved, closed")
+    incident_status: str = Field(..., description="Incident status: resolved, closed")
+    
+    @validator('alert_disposition')
+    def validate_alert_disposition(cls, v):
+        allowed = ['false_positive', 'resolved', 'closed']
+        if v not in allowed:
+            raise ValueError(f'Alert disposition must be one of: {allowed}')
+        return v
+    
+    @validator('incident_status')
+    def validate_incident_status(cls, v):
+        allowed = ['resolved', 'closed']
+        if v not in allowed:
+            raise ValueError(f'Incident status must be one of: {allowed}')
+        return v

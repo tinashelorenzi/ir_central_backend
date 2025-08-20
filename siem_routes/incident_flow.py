@@ -19,7 +19,7 @@ from models.incident_flow import (
 )
 from models.playbook import IRPlaybook, PlaybookExecution
 from auth_utils import get_current_user, require_manager_or_above
-from schemas import PaginatedResponse, MessageResponse
+from schemas import PaginatedResponse, MessageResponse, IncidentFlowResponse, IncidentFlowStepResponse, FlowCompletionRequest
 
 # Pydantic schemas for request/response
 from pydantic import BaseModel, Field
@@ -1661,3 +1661,88 @@ def generate_markdown_report(flow: IncidentFlow, current_user: User):
         "generated_at": datetime.utcnow().isoformat(),
         "generated_by": current_user.username
     }
+
+@router.post("/{flow_id}/trigger", response_model=IncidentFlowResponse)
+async def trigger_playbook_flow(
+    flow_id: str,
+    auth: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    flow = db.query(IncidentFlow).filter(IncidentFlow.flow_id == flow_id).first()
+    if not flow:
+        raise HTTPException(status_code=404, detail="Flow not found")
+    
+    # Update alert status to TRIAGED when playbook is triggered
+    if flow.alert_id:
+        alert = db.query(Alert).filter(Alert.id == flow.alert_id).first()
+        if alert and alert.status == AlertStatus.INVESTIGATING:
+            alert.status = AlertStatus.TRIAGED
+            alert.updated_at = datetime.utcnow()
+            db.commit()
+    
+    return FlowResponse.from_orm(flow)
+
+@router.post("/{flow_id}/complete", response_model=IncidentFlowResponse)
+async def complete_flow_with_status(
+    flow_id: str,
+    completion_data: FlowCompletionRequest,
+    auth: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Complete a flow with status selection for alert and incident"""
+    
+    flow = db.query(IncidentFlow).options(
+        joinedload(IncidentFlow.assigned_analyst),
+        joinedload(IncidentFlow.lead_analyst),
+        joinedload(IncidentFlow.playbook)
+    ).filter(IncidentFlow.flow_id == flow_id).first()
+    
+    if not flow:
+        raise HTTPException(status_code=404, detail="Flow not found")
+    
+    # Check if flow is actually complete (100% progress)
+    if flow.progress_percentage < 100.0:
+        raise HTTPException(
+            status_code=400, 
+            detail="Flow must be 100% complete before it can be closed"
+        )
+    
+    # Update flow status
+    flow.status = IncidentFlowStatus.COMPLETED
+    flow.executive_summary = completion_data.final_report
+    flow.completed_at = datetime.utcnow()
+    flow.updated_at = datetime.utcnow()
+    
+    # Update alert status based on disposition
+    if flow.alert_id:
+        alert = db.query(Alert).filter(Alert.id == flow.alert_id).first()
+        if alert:
+            if completion_data.alert_disposition == "false_positive":
+                alert.status = AlertStatus.FALSE_POSITIVE
+            elif completion_data.alert_disposition == "resolved":
+                alert.status = AlertStatus.RESOLVED
+            elif completion_data.alert_disposition == "closed":
+                alert.status = AlertStatus.CLOSED
+            
+            alert.resolution_at = datetime.utcnow()
+            alert.resolution_notes = completion_data.final_report
+            alert.updated_at = datetime.utcnow()
+    
+    # Update incident status (you'll need to import Incident model)
+    if flow.incident_id:
+        # Note: You may need to adjust this based on your incident model
+        incident = db.query(Incident).filter(Incident.incident_id == flow.incident_id).first()
+        if incident:
+            if completion_data.incident_status == "resolved":
+                incident.status = IncidentStatus.RESOLVED
+            elif completion_data.incident_status == "closed":
+                incident.status = IncidentStatus.CLOSED
+            
+            incident.resolved_at = datetime.utcnow()
+            incident.resolution_summary = completion_data.final_report
+            incident.updated_at = datetime.utcnow()
+    
+    db.commit()
+    
+    # Return the updated flow response
+    return await get_incident_flow_response(flow, db)

@@ -751,6 +751,39 @@ async def update_alert(
 
 # ===== ADMIN/ANALYST ONLY ENDPOINTS (JWT AUTH ONLY) =====
 
+@router.post("/{alert_id}/take-ownership", response_model=AlertResponse)
+async def take_alert_ownership(
+    alert_id: int,
+    notes: Optional[str] = None,
+    auth: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Take ownership of an alert and automatically update status to INVESTIGATING.
+    
+    **Authentication: JWT token required (analyst/admin only)**
+    """
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    
+    if alert.assigned_analyst_id is not None:
+        raise HTTPException(status_code=400, detail="Alert already assigned")
+    
+    # UPDATE STATUS TO INVESTIGATING when ownership is taken
+    alert.assigned_analyst_id = auth.id
+    alert.status = AlertStatus.INVESTIGATING  # Key change here
+    alert.first_response_at = datetime.utcnow()
+    alert.updated_at = datetime.utcnow()
+    
+    if notes:
+        alert.investigation_notes = notes
+    
+    db.commit()
+    db.refresh(alert)
+    
+    return AlertResponse.from_orm(alert)
+
 # ===== HEALTH CHECK ENDPOINT (NO AUTH REQUIRED) =====
 
 @router.get("/health", response_model=Dict[str, Any])
