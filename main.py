@@ -10,6 +10,7 @@ from siem_routes.auth import router as auth_router
 from siem_routes.playbooks import router as playbook_router
 from siem_routes.endpoint_tokens import router as endpoint_tokens_router
 from siem_routes.incident_flow import router as incident_flow_router
+from siem_routes.incidents import router as incidents_router
 from routes.alert import router as alert_router
 from schemas import HealthCheck, ErrorResponse
 from ws.incidents import websocket_endpoint, cleanup_connections_task
@@ -106,6 +107,7 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(playbook_router, prefix="/api/v1")
 app.include_router(endpoint_tokens_router)
 app.include_router(incident_flow_router)
+app.include_router(incidents_router)
 app.include_router(alert_router)
 
 if __name__ == "__main__":
