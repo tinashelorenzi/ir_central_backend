@@ -32,3 +32,7 @@ from models.playbook import (
 from models.endpoint_tokens import EndpointToken
 from models.alert import Alert, AlertTag, AlertArtifact, AlertSeverity, AlertStatus, AlertSource, ThreatType
 from models.incident import Incident, IncidentStatus, IncidentSeverity, IncidentPriority
+from models.incident_flow import (
+    IncidentFlow, IncidentFlowStep, IncidentFlowUserInput, IncidentFlowArtifact,
+    IncidentFlowStatus, StepStatus, StepType
+)

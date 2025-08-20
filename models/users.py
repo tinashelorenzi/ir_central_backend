@@ -67,6 +67,11 @@ class User(Base):
     owned_incidents = relationship("Incident", foreign_keys="Incident.owner_id", back_populates="owner")
     assigned_incidents = relationship("Incident", foreign_keys="Incident.assigned_analyst_id", back_populates="assigned_analyst")
     
+    # Incident Flow relationships
+    assigned_flows = relationship("IncidentFlow", foreign_keys="IncidentFlow.assigned_analyst_id", back_populates="assigned_analyst")
+    lead_flows = relationship("IncidentFlow", foreign_keys="IncidentFlow.lead_analyst_id", back_populates="lead_analyst")
+    created_flows = relationship("IncidentFlow", foreign_keys="IncidentFlow.created_by_id", back_populates="created_by")
+    
     def __repr__(self):
         return f"<User(username='{self.username}', role='{self.role}', active={self.is_active})>"
 

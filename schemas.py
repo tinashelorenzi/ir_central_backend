@@ -5,6 +5,7 @@ from models.users import UserRole
 from models.playbook import PlaybookStatus, StepType, InputFieldType
 from models.alert import AlertSeverity, AlertStatus, AlertSource, ThreatType
 from models.incident import IncidentSeverity, IncidentStatus, IncidentPriority, IncidentCategory
+from enum import Enum
 
 # Authentication schemas
 class Token(BaseModel):
@@ -1411,3 +1412,582 @@ class AddTimelineEventRequest(BaseModel):
     event: str = Field(..., min_length=1, max_length=500)
     source: str = Field(..., min_length=1, max_length=100)
     details: Optional[str] = None
+
+# ============================================================================
+# INCIDENT FLOW SCHEMAS
+# ============================================================================
+
+class IncidentFlowStatus(str, Enum):
+    """Status of incident flow execution"""
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    WAITING_INPUT = "waiting_input"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+class StepStatus(str, Enum):
+    """Status of individual steps"""
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    WAITING_INPUT = "waiting_input"
+    WAITING_APPROVAL = "waiting_approval"
+
+class StepType(str, Enum):
+    """Types of steps in the incident flow"""
+    MANUAL_ACTION = "manual_action"
+    USER_INPUT = "user_input"
+    AUTOMATION = "automation"
+    DECISION_POINT = "decision_point"
+    APPROVAL = "approval"
+    EVIDENCE_COLLECTION = "evidence_collection"
+    NOTIFICATION = "notification"
+    DOCUMENTATION = "documentation"
+
+class ArtifactType(str, Enum):
+    """Types of artifacts/evidence"""
+    SCREENSHOT = "screenshot"
+    LOG_FILE = "log_file"
+    PCAP = "pcap"
+    MEMORY_DUMP = "memory_dump"
+    DISK_IMAGE = "disk_image"
+    EMAIL = "email"
+    DOCUMENT = "document"
+    MALWARE_SAMPLE = "malware_sample"
+    NETWORK_CONFIG = "network_config"
+    SYSTEM_CONFIG = "system_config"
+    OTHER = "other"
+
+# ============================================================================
+# BASE SCHEMAS
+# ============================================================================
+
+class UserSummary(BaseModel):
+    """Summary user information for responses"""
+    id: int
+    username: str
+    full_name: str
+    email: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+class PlaybookSummary(BaseModel):
+    """Summary playbook information for responses"""
+    id: int
+    name: str
+    version: str
+    description: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+# ============================================================================
+# INCIDENT FLOW SCHEMAS
+# ============================================================================
+
+class IncidentFlowCreate(BaseModel):
+    """Schema for creating a new incident flow"""
+    incident_id: str = Field(..., description="Incident ID this flow is for")
+    playbook_id: int = Field(..., description="Playbook to execute")
+    alert_id: Optional[int] = Field(None, description="Original alert that triggered this")
+    assigned_analyst_id: Optional[int] = Field(None, description="Assigned analyst (defaults to current user)")
+    lead_analyst_id: Optional[int] = Field(None, description="Lead analyst for this incident")
+    team_members: List[int] = Field(default=[], description="List of team member user IDs")
+    tags: List[str] = Field(default=[], description="Tags for categorization")
+    custom_fields: Dict[str, Any] = Field(default={}, description="Custom fields for organization-specific data")
+    
+    @validator('incident_id')
+    def validate_incident_id(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Incident ID cannot be empty')
+        return v.strip()
+
+class IncidentFlowUpdate(BaseModel):
+    """Schema for updating an incident flow"""
+    status: Optional[IncidentFlowStatus] = None
+    current_phase: Optional[str] = None
+    current_step_name: Optional[str] = None
+    assigned_analyst_id: Optional[int] = None
+    lead_analyst_id: Optional[int] = None
+    team_members: Optional[List[int]] = None
+    tags: Optional[List[str]] = None
+    custom_fields: Optional[Dict[str, Any]] = None
+    
+    # Summary fields
+    executive_summary: Optional[str] = Field(None, max_length=2000)
+    technical_summary: Optional[str] = Field(None, max_length=5000)
+    business_impact: Optional[str] = Field(None, max_length=2000)
+    lessons_learned: Optional[str] = Field(None, max_length=3000)
+    
+    # Results
+    incident_contained: Optional[bool] = None
+    root_cause_identified: Optional[bool] = None
+    threat_eradicated: Optional[bool] = None
+    systems_recovered: Optional[bool] = None
+    
+    # Metrics
+    time_to_containment: Optional[int] = Field(None, description="Minutes to containment")
+    time_to_eradication: Optional[int] = Field(None, description="Minutes to eradication")
+    time_to_recovery: Optional[int] = Field(None, description="Minutes to recovery")
+    procedure_compliance_score: Optional[float] = Field(None, ge=0, le=100)
+    response_effectiveness_score: Optional[float] = Field(None, ge=0, le=100)
+
+class CurrentStepInfo(BaseModel):
+    """Information about the current step"""
+    step_name: str
+    title: str
+    status: StepStatus
+    step_type: StepType
+    requires_approval: bool
+    instructions: Optional[str] = None
+    expected_duration: Optional[int] = None
+
+class IncidentFlowResponse(BaseModel):
+    """Response schema for incident flow"""
+    id: int
+    flow_id: str
+    incident_id: str
+    playbook_id: int
+    alert_id: Optional[int]
+    status: IncidentFlowStatus
+    current_phase: Optional[str]
+    current_step_name: Optional[str]
+    
+    # Progress tracking
+    progress_percentage: float
+    total_phases: int
+    completed_phases: int
+    total_steps: int
+    completed_steps: int
+    failed_steps: int
+    skipped_steps: int
+    
+    # Timing
+    started_at: Optional[datetime]
+    last_activity_at: datetime
+    completed_at: Optional[datetime]
+    estimated_completion: Optional[datetime]
+    actual_duration: Optional[int]
+    total_pause_duration: int
+    
+    # Team
+    assigned_analyst_id: int
+    lead_analyst_id: Optional[int]
+    team_members: List[int]
+    
+    # Metadata
+    tags: List[str]
+    created_at: datetime
+    updated_at: datetime
+    
+    # Related data
+    assigned_analyst: Optional[UserSummary] = None
+    lead_analyst: Optional[UserSummary] = None
+    playbook: Optional[PlaybookSummary] = None
+    current_step: Optional[CurrentStepInfo] = None
+    
+    # Results summary
+    incident_contained: bool
+    root_cause_identified: bool
+    threat_eradicated: bool
+    systems_recovered: bool
+    
+    class Config:
+        from_attributes = True
+
+class IncidentFlowSummary(BaseModel):
+    """Summary information for flow lists"""
+    id: int
+    flow_id: str
+    incident_id: str
+    status: IncidentFlowStatus
+    current_phase: Optional[str]
+    progress_percentage: float
+    started_at: Optional[datetime]
+    last_activity_at: datetime
+    assigned_analyst: Optional[UserSummary] = None
+    playbook_name: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+# ============================================================================
+# STEP SCHEMAS
+# ============================================================================
+
+class IncidentFlowStepUpdate(BaseModel):
+    """Schema for updating a step"""
+    status: Optional[StepStatus] = None
+    output_data: Optional[Dict[str, Any]] = Field(default={}, description="Data collected/generated by this step")
+    notes: Optional[str] = Field(None, max_length=2000, description="Notes about step execution")
+    success: Optional[bool] = None
+    error_message: Optional[str] = Field(None, max_length=1000)
+    evidence_collected: Optional[List[Dict[str, Any]]] = Field(default=[], description="Evidence items collected")
+    
+    # Automation results
+    automation_result: Optional[Dict[str, Any]] = None
+    
+    # Approval
+    approval_notes: Optional[str] = Field(None, max_length=1000)
+
+class StepExecutionRequest(BaseModel):
+    """Request to execute a step with specific parameters"""
+    output_data: Dict[str, Any] = Field(default={}, description="Data to record for this step")
+    notes: Optional[str] = Field(None, max_length=2000)
+    evidence_collected: List[Dict[str, Any]] = Field(default=[])
+    
+class StepCompletionRequest(BaseModel):
+    """Request to mark a step as completed"""
+    output_data: Dict[str, Any] = Field(default={})
+    notes: Optional[str] = Field(None, max_length=2000)
+    success: bool = Field(True, description="Whether the step completed successfully")
+    evidence_collected: List[Dict[str, Any]] = Field(default=[])
+
+class IncidentFlowStepResponse(BaseModel):
+    """Response schema for incident flow step"""
+    id: int
+    flow_id: int
+    phase_name: str
+    step_name: str
+    step_index: int
+    global_step_index: int
+    step_type: StepType
+    
+    # Step definition
+    title: str
+    description: Optional[str]
+    instructions: Optional[str]
+    expected_duration: Optional[int]
+    depends_on_steps: List[str]
+    
+    # Execution status
+    status: StepStatus
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    last_updated_at: datetime
+    actual_duration: Optional[int]
+    
+    # Assignment
+    assigned_to_id: Optional[int]
+    executed_by_id: Optional[int]
+    assigned_to: Optional[UserSummary] = None
+    executed_by: Optional[UserSummary] = None
+    
+    # Results
+    success: Optional[bool]
+    output_data: Dict[str, Any]
+    notes: Optional[str]
+    error_message: Optional[str]
+    
+    # Automation
+    is_automated: bool
+    automation_script: Optional[str]
+    automation_result: Optional[Dict[str, Any]]
+    
+    # Approval
+    requires_approval: bool
+    approved_by_id: Optional[int]
+    approved_at: Optional[datetime]
+    approval_notes: Optional[str]
+    approved_by: Optional[UserSummary] = None
+    
+    # Evidence
+    evidence_collected: List[Dict[str, Any]]
+    screenshots: List[str]
+    
+    # Computed properties
+    is_blocking: bool = Field(description="Whether this step is blocking progress")
+    can_execute: bool = Field(description="Whether this step can be executed now")
+    
+    class Config:
+        from_attributes = True
+
+# ============================================================================
+# USER INPUT SCHEMAS
+# ============================================================================
+
+class UserInputCreate(BaseModel):
+    """Schema for creating user input"""
+    phase_name: Optional[str] = None
+    step_name: Optional[str] = None
+    field_name: str = Field(..., description="Name of the input field")
+    field_type: str = Field(..., description="Type of input (text, textarea, select, etc.)")
+    label: str = Field(..., description="Human-readable label")
+    description: Optional[str] = Field(None, description="Help text for the field")
+    placeholder: Optional[str] = None
+    
+    # Input data
+    raw_value: Optional[str] = None
+    parsed_value: Optional[Dict[str, Any]] = None
+    file_paths: List[str] = Field(default=[], description="File paths for file uploads")
+    
+    # Validation
+    is_required: bool = False
+    is_sensitive: bool = Field(False, description="Whether this contains sensitive data")
+    validation_rules: Optional[Dict[str, Any]] = None
+    options: Optional[List[Dict[str, Any]]] = Field(None, description="Options for select/radio inputs")
+    
+    @validator('field_name')
+    def validate_field_name(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Field name cannot be empty')
+        return v.strip()
+
+class UserInputResponse(BaseModel):
+    """Response schema for user input"""
+    id: int
+    flow_id: int
+    step_id: Optional[int]
+    phase_name: Optional[str]
+    step_name: Optional[str]
+    field_name: str
+    field_type: str
+    label: str
+    description: Optional[str]
+    placeholder: Optional[str]
+    
+    # Input data (sensitive data is redacted)
+    raw_value: Optional[str]
+    parsed_value: Optional[Dict[str, Any]]
+    file_paths: List[str]
+    
+    # Validation
+    is_required: bool
+    is_sensitive: bool
+    is_valid: bool
+    validation_errors: List[str]
+    validation_rules: Optional[Dict[str, Any]]
+    options: Optional[List[Dict[str, Any]]]
+    
+    # Metadata
+    collected_by_id: int
+    collected_at: datetime
+    updated_at: datetime
+    collected_by: Optional[UserSummary] = None
+    
+    class Config:
+        from_attributes = True
+
+# ============================================================================
+# ARTIFACT SCHEMAS
+# ============================================================================
+
+class ArtifactCreate(BaseModel):
+    """Schema for creating an artifact"""
+    step_name: Optional[str] = None
+    artifact_type: str = Field(..., description="Type of artifact")
+    name: str = Field(..., description="Name of the artifact")
+    description: Optional[str] = Field(None, max_length=1000)
+    
+    # File information
+    file_path: Optional[str] = None
+    file_size: Optional[int] = Field(None, ge=0)
+    file_hash: Optional[str] = Field(None, description="SHA256 hash of the file")
+    mime_type: Optional[str] = None
+    
+    # Evidence chain
+    collected_from: Optional[str] = Field(None, description="Source system/location")
+    collection_method: Optional[str] = Field(None, description="How the evidence was collected")
+    chain_of_custody: List[Dict[str, Any]] = Field(default=[], description="Chain of custody records")
+    
+    # Classification
+    is_critical: bool = Field(False, description="Whether this is critical evidence")
+    is_sensitive: bool = Field(False, description="Whether this contains sensitive data")
+    retention_period: Optional[int] = Field(None, description="Retention period in days")
+    tags: List[str] = Field(default=[], description="Tags for categorization")
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Artifact name cannot be empty')
+        return v.strip()
+
+class ArtifactResponse(BaseModel):
+    """Response schema for artifact"""
+    id: int
+    flow_id: int
+    step_id: Optional[int]
+    artifact_type: str
+    name: str
+    description: Optional[str]
+    
+    # File information
+    file_path: Optional[str]
+    file_size: Optional[int]
+    file_hash: Optional[str]
+    mime_type: Optional[str]
+    
+    # Evidence chain
+    collected_from: Optional[str]
+    collection_method: Optional[str]
+    chain_of_custody: List[Dict[str, Any]]
+    
+    # Classification
+    is_critical: bool
+    is_sensitive: bool
+    retention_period: Optional[int]
+    tags: List[str]
+    
+    # Metadata
+    collected_by_id: int
+    collected_at: datetime
+    collected_by: Optional[UserSummary] = None
+    
+    class Config:
+        from_attributes = True
+
+# ============================================================================
+# REPORTING SCHEMAS
+# ============================================================================
+
+class FlowReportRequest(BaseModel):
+    """Request parameters for generating a flow report"""
+    format: str = Field("markdown", description="Report format: markdown, json, pdf")
+    include_sensitive: bool = Field(False, description="Include sensitive data in report")
+    include_artifacts: bool = Field(True, description="Include artifact information")
+    include_user_inputs: bool = Field(True, description="Include user input data")
+    sections: Optional[List[str]] = Field(None, description="Specific sections to include")
+
+class FlowReportResponse(BaseModel):
+    """Response schema for flow report"""
+    flow_id: str
+    format: str
+    content: str
+    generated_at: datetime
+    generated_by: str
+    file_path: Optional[str] = None
+    file_size: Optional[int] = None
+
+class FlowMetrics(BaseModel):
+    """Flow performance metrics"""
+    flow_id: str
+    
+    # Overall metrics
+    overall_metrics: Dict[str, Any] = Field(description="Overall flow performance metrics")
+    
+    # Step metrics
+    step_metrics: List[Dict[str, Any]] = Field(description="Per-step performance metrics")
+    
+    # Phase summary
+    phase_summary: Dict[str, Any] = Field(description="Summary by phase")
+    
+    # Computed metrics
+    efficiency_score: Optional[float] = Field(None, description="Overall efficiency score")
+    quality_score: Optional[float] = Field(None, description="Overall quality score")
+    
+    generated_at: datetime
+
+# ============================================================================
+# DASHBOARD SCHEMAS
+# ============================================================================
+
+class FlowDashboardSummary(BaseModel):
+    """Dashboard summary for incident flows"""
+    summary: Dict[str, int] = Field(description="Summary statistics")
+    recent_activity: List[Dict[str, Any]] = Field(description="Recent flow activity")
+    performance_trends: Optional[Dict[str, Any]] = Field(None, description="Performance trends")
+    generated_at: datetime
+
+class FlowActivityItem(BaseModel):
+    """Individual activity item for dashboard"""
+    flow_id: str
+    incident_id: str
+    status: IncidentFlowStatus
+    current_phase: Optional[str]
+    progress_percentage: float
+    last_activity_at: datetime
+    assigned_analyst: Optional[UserSummary] = None
+    playbook_name: Optional[str] = None
+    activity_type: str = Field(description="Type of activity (created, updated, completed)")
+
+# ============================================================================
+# FLOW CONTROL SCHEMAS
+# ============================================================================
+
+class FlowControlRequest(BaseModel):
+    """Request for flow control operations"""
+    reason: Optional[str] = Field(None, max_length=500, description="Reason for the action")
+    notify_team: bool = Field(True, description="Whether to notify team members")
+
+class FlowStartRequest(FlowControlRequest):
+    """Request to start a flow"""
+    estimated_completion: Optional[datetime] = None
+
+class FlowPauseRequest(FlowControlRequest):
+    """Request to pause a flow"""
+    pause_reason: str = Field(..., max_length=500)
+
+class FlowResumeRequest(FlowControlRequest):
+    """Request to resume a flow"""
+    resume_notes: Optional[str] = Field(None, max_length=500)
+
+# ============================================================================
+# SEARCH AND FILTER SCHEMAS
+# ============================================================================
+
+class FlowSearchFilters(BaseModel):
+    """Search and filter parameters for flows"""
+    search: Optional[str] = Field(None, description="Search in flow IDs and incident IDs")
+    incident_id: Optional[str] = None
+    status: Optional[List[IncidentFlowStatus]] = None
+    assigned_analyst_id: Optional[int] = None
+    lead_analyst_id: Optional[int] = None
+    playbook_id: Optional[int] = None
+    tags: Optional[List[str]] = None
+    date_range_start: Optional[datetime] = None
+    date_range_end: Optional[datetime] = None
+    progress_min: Optional[float] = Field(None, ge=0, le=100)
+    progress_max: Optional[float] = Field(None, ge=0, le=100)
+
+class StepSearchFilters(BaseModel):
+    """Search and filter parameters for steps"""
+    phase_name: Optional[str] = None
+    status: Optional[List[StepStatus]] = None
+    step_type: Optional[List[StepType]] = None
+    assigned_to_id: Optional[int] = None
+    requires_approval: Optional[bool] = None
+    is_automated: Optional[bool] = None
+    has_errors: Optional[bool] = None
+
+# ============================================================================
+# BULK OPERATIONS SCHEMAS
+# ============================================================================
+
+class BulkStepUpdate(BaseModel):
+    """Bulk update multiple steps"""
+    step_names: List[str] = Field(..., description="List of step names to update")
+    update_data: IncidentFlowStepUpdate = Field(..., description="Update data to apply")
+    skip_validation: bool = Field(False, description="Skip dependency validation")
+
+class BulkOperationResponse(BaseModel):
+    """Response for bulk operations"""
+    total_requested: int
+    successful: int
+    failed: int
+    errors: List[Dict[str, str]] = Field(description="Errors that occurred")
+    updated_items: List[str] = Field(description="Successfully updated items")
+
+# ============================================================================
+# VALIDATION SCHEMAS
+# ============================================================================
+
+class FlowValidationResult(BaseModel):
+    """Result of flow validation"""
+    is_valid: bool
+    errors: List[str] = Field(description="Validation errors")
+    warnings: List[str] = Field(description="Validation warnings")
+    checked_at: datetime
+
+class StepValidationResult(BaseModel):
+    """Result of step validation"""
+    step_name: str
+    is_valid: bool
+    can_execute: bool
+    blocking_dependencies: List[str] = Field(description="Dependencies preventing execution")
+    errors: List[str]
+    warnings: List[str]
