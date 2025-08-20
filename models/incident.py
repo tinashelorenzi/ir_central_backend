@@ -25,6 +25,7 @@ class IncidentStatus(str, enum.Enum):
     CONTAINED = "contained"             # Threat contained
     ERADICATING = "eradicating"        # Removing threat
     RECOVERING = "recovering"           # System recovery
+    RESOLVED = "resolved"              # Incident resolved
     LESSONS_LEARNED = "lessons_learned" # Post-incident analysis
     CLOSED = "closed"                   # Incident closed
 

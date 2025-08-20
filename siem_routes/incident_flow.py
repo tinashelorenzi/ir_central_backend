@@ -17,6 +17,7 @@ from models.incident_flow import (
     IncidentFlow, IncidentFlowStep, IncidentFlowUserInput, IncidentFlowArtifact,
     IncidentFlowStatus, StepStatus, StepType
 )
+from models.incident import Incident, IncidentStatus
 from models.playbook import IRPlaybook, PlaybookExecution
 from auth_utils import get_current_user, require_manager_or_above
 from schemas import PaginatedResponse, MessageResponse, IncidentFlowResponse, IncidentFlowStepResponse, FlowCompletionRequest
