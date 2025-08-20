@@ -14,8 +14,10 @@ from database import get_db
 from models.users import User
 from models.incident import Incident, IncidentStatus
 from models.incident_flow import IncidentFlow, IncidentFlowStep, IncidentFlowUserInput
+from models.alert import Alert
 from auth_utils import get_current_user
-from schemas import PaginatedResponse, MessageResponse
+from schemas import PaginatedResponse, MessageResponse, AlertResponse
+
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -330,3 +332,207 @@ async def get_incident(
     except Exception as e:
         logger.error(f"Error getting incident {incident_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get("/alerts/{alert_id}", response_model=AlertResponse)
+async def get_alert_details(
+    alert_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get detailed information about a specific alert.
+    
+    This endpoint is for frontend use with JWT authentication.
+    Returns comprehensive alert details including all metadata,
+    network information, timeline data, and related incidents.
+    """
+    try:
+        # Query the alert with the given ID and load the assigned_analyst relationship
+        alert = db.query(Alert).options(
+            joinedload(Alert.assigned_analyst)
+        ).filter(Alert.id == alert_id).first()
+        
+        if not alert:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Alert {alert_id} not found"
+            )
+        
+        # Manually create the response dictionary to handle relationships properly
+        alert_data = {
+            # Basic fields
+            "id": alert.id,
+            "external_alert_id": alert.external_alert_id,
+            "title": alert.title,
+            "description": alert.description,
+            "severity": alert.severity,
+            "source": alert.source,
+            "threat_type": alert.threat_type,
+            "detected_at": alert.detected_at,
+            "source_system": alert.source_system,
+            "rule_id": alert.rule_id,
+            "rule_name": alert.rule_name,
+            
+            # Network information
+            "source_ip": alert.source_ip,
+            "destination_ip": alert.destination_ip,
+            "source_port": alert.source_port,
+            "destination_port": alert.destination_port,
+            "protocol": alert.protocol,
+            
+            # Asset information
+            "affected_hostname": alert.affected_hostname,
+            "affected_user": alert.affected_user,
+            "asset_criticality": alert.asset_criticality,
+            
+            # Status and classification
+            "status": alert.status,
+            "confidence_score": alert.confidence_score,
+            "risk_score": alert.risk_score,
+            
+            # Assignment and tracking
+            "assigned_analyst_id": alert.assigned_analyst_id,
+            "incident_id": alert.incident_id,
+            "playbook_execution_id": alert.playbook_execution_id,
+            "correlation_id": alert.correlation_id,
+            "parent_alert_id": alert.parent_alert_id,
+            
+            # Enrichment and investigation
+            "enrichment_data": alert.enrichment_data or {},
+            "investigation_notes": alert.investigation_notes,
+            "analyst_comments": alert.analyst_comments,
+            
+            # Reporting
+            "reported": alert.reported,
+            "reported_at": alert.reported_at,
+            "reported_to": alert.reported_to or [],
+            "false_positive": alert.false_positive,
+            "false_positive_reason": alert.false_positive_reason,
+            
+            # Impact
+            "business_impact": alert.business_impact,
+            "data_classification": alert.data_classification,
+            "estimated_financial_impact": alert.estimated_financial_impact,
+            
+            # Compliance
+            "requires_notification": alert.requires_notification,
+            "notification_deadline": alert.notification_deadline,
+            "compliance_notes": alert.compliance_notes,
+            
+            # Timing
+            "received_at": alert.received_at,
+            "created_at": alert.created_at,
+            "updated_at": alert.updated_at,
+            "closed_at": alert.closed_at,
+            "first_response_at": alert.first_response_at,
+            "containment_at": alert.containment_at,
+            "resolution_at": alert.resolution_at,
+            
+            # Raw data
+            "raw_alert_data": alert.raw_alert_data or {},
+        }
+        
+        # Handle assigned_analyst relationship properly
+        if alert.assigned_analyst:
+            alert_data["assigned_analyst"] = {
+                "id": alert.assigned_analyst.id,
+                "username": alert.assigned_analyst.username,
+                "full_name": alert.assigned_analyst.full_name,
+                "email": alert.assigned_analyst.email,
+                "role": alert.assigned_analyst.role
+            }
+        else:
+            alert_data["assigned_analyst"] = None
+        
+        # Calculate timing metrics if timestamps are available
+        if alert.received_at and alert.first_response_at:
+            alert_data["time_to_first_response"] = (
+                alert.first_response_at - alert.received_at
+            ).total_seconds() / 60
+        else:
+            alert_data["time_to_first_response"] = None
+            
+        if alert.received_at and alert.resolution_at:
+            alert_data["time_to_resolution"] = (
+                alert.resolution_at - alert.received_at
+            ).total_seconds() / 60
+        else:
+            alert_data["time_to_resolution"] = None
+        
+        # Calculate if alert is overdue (you can customize this logic)
+        alert_data["is_overdue"] = False
+        if alert.status == "new" and alert.received_at:
+            # Consider alerts overdue if they're new for more than 30 minutes
+            time_since_received = datetime.utcnow() - alert.received_at
+            alert_data["is_overdue"] = time_since_received.total_seconds() > 1800  # 30 minutes
+        
+        # Get related incident IDs (if your Alert model has incidents relationship)
+        try:
+            if hasattr(alert, 'incidents') and alert.incidents:
+                alert_data["incident_ids"] = [inc.incident_id for inc in alert.incidents]
+            else:
+                alert_data["incident_ids"] = []
+        except:
+            alert_data["incident_ids"] = []
+        
+        logger.info(f"User {current_user.username} retrieved alert {alert_id} details")
+        
+        # Create AlertResponse from the dictionary
+        return AlertResponse(**alert_data)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving alert {alert_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve alert details: {str(e)}"
+        )
+
+@router.get("/alerts/{alert_id}/summary")
+async def get_alert_summary(
+    alert_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get a summary of alert information (lighter endpoint for quick access).
+    
+    Returns basic alert information without heavy calculations or
+    complex relationships. Useful for tooltips or quick previews.
+    """
+    try:
+        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+        
+        if not alert:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Alert {alert_id} not found"
+            )
+        
+        # Return basic summary information
+        return {
+            "id": alert.id,
+            "title": alert.title,
+            "description": alert.description,
+            "severity": alert.severity,
+            "status": alert.status,
+            "source": alert.source,
+            "threat_type": alert.threat_type,
+            "confidence_score": alert.confidence_score,
+            "detected_at": alert.detected_at,
+            "received_at": alert.received_at,
+            "assigned_analyst_id": alert.assigned_analyst_id,
+            "incident_ids": [inc.incident_id for inc in alert.incidents] if alert.incidents else [],
+            "is_false_positive": alert.is_false_positive,
+            "reported": alert.reported
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving alert {alert_id} summary: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve alert summary: {str(e)}"
+        )
