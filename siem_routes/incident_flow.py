@@ -1216,7 +1216,9 @@ def initialize_flow_steps(flow_id: int):
         global_step_index = 0
         
         for phase_index, phase in enumerate(phases):
-            phase_name = phase.get("name", f"phase_{phase_index}")
+            phase_name = phase.get("name") or phase.get("title") or f"phase_{phase_index+1}"
+            if not phase_name.strip():
+                phase_name = f"Phase {phase_index + 1}"
             steps = phase.get("steps", [])
             
             for step_index, step_def in enumerate(steps):
