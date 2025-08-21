@@ -1,9 +1,10 @@
 from pydantic import BaseModel, EmailStr, validator, Field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
 from models.users import UserRole
 from models.playbook import PlaybookStatus, StepType, InputFieldType
 from models.alert import AlertSeverity, AlertStatus, AlertSource, ThreatType
+from models.reports import ReportType, ReportStatus, ReportFormat
 from models.incident import IncidentSeverity, IncidentStatus, IncidentPriority, IncidentCategory
 from enum import Enum
 
@@ -2185,3 +2186,293 @@ class ReportTemplateCloneRequest(BaseModel):
         if not v or len(v.strip()) == 0:
             raise ValueError('Author cannot be empty')
         return v.strip()
+
+class ReportBase(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    description: Optional[str] = None
+    report_type: ReportType
+    template_id: Optional[int] = None
+    report_config: Dict[str, Any] = Field(default_factory=dict)
+    tags: Optional[str] = None
+    executive_summary: Optional[str] = None
+
+class ReportCreate(ReportBase):
+    """Schema for creating a new report"""
+    pass
+
+class ReportUpdate(BaseModel):
+    """Schema for updating an existing report"""
+    title: Optional[str] = Field(None, min_length=1, max_length=300)
+    description: Optional[str] = None
+    status: Optional[ReportStatus] = None
+    generated_content: Optional[str] = None
+    content_metadata: Optional[Dict[str, Any]] = None
+    report_config: Optional[Dict[str, Any]] = None
+    data_mappings: Optional[Dict[str, Any]] = None
+    available_formats: Optional[List[str]] = None
+    exported_files: Optional[Dict[str, str]] = None
+    tags: Optional[str] = None
+    executive_summary: Optional[str] = None
+
+class ReportResponse(ReportBase):
+    """Full report response schema"""
+    id: int
+    status: ReportStatus
+    generated_content: Optional[str] = None
+    content_metadata: Dict[str, Any] = Field(default_factory=dict)
+    data_mappings: Dict[str, Any] = Field(default_factory=dict)
+    available_formats: List[str] = Field(default_factory=list)
+    exported_files: Dict[str, str] = Field(default_factory=dict)
+    
+    # Timestamps
+    created_at: datetime
+    updated_at: datetime
+    generated_at: Optional[datetime] = None
+    
+    # User information
+    created_by_id: int
+    created_by: Optional[Dict[str, Any]] = None
+    
+    # Metrics
+    generation_time_seconds: Optional[float] = None
+    file_size_bytes: Optional[int] = None
+    view_count: int = 0
+    download_count: int = 0
+    last_accessed_at: Optional[datetime] = None
+    
+    # Related data
+    template: Optional[Dict[str, Any]] = None
+    elements: Optional[List[Dict[str, Any]]] = None
+    
+    class Config:
+        from_attributes = True
+
+class ReportListItem(BaseModel):
+    """Simplified report schema for list views"""
+    id: int
+    title: str
+    description: Optional[str] = None
+    report_type: ReportType
+    status: ReportStatus
+    created_at: datetime
+    updated_at: datetime
+    generated_at: Optional[datetime] = None
+    created_by_id: int
+    created_by: Optional[Dict[str, Any]] = None
+    template_id: Optional[int] = None
+    template: Optional[Dict[str, Any]] = None
+    view_count: int = 0
+    download_count: int = 0
+    tags: Optional[str] = None
+    executive_summary: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+# Report Element schemas
+class ReportElementBase(BaseModel):
+    element_type: str = Field(..., description="Type of element: user_input, analytics, static_text, incident_data")
+    element_key: str = Field(..., max_length=100)
+    display_name: str = Field(..., max_length=200)
+    section_name: str = Field(..., max_length=100)
+    position_order: int = Field(default=0)
+    element_data: Dict[str, Any] = Field(default_factory=dict)
+    template_variable: Optional[str] = Field(None, max_length=100)
+
+class ReportElementCreate(ReportElementBase):
+    report_id: int
+
+class ReportElementUpdate(BaseModel):
+    element_type: Optional[str] = None
+    element_key: Optional[str] = None
+    display_name: Optional[str] = None
+    section_name: Optional[str] = None
+    position_order: Optional[int] = None
+    element_data: Optional[Dict[str, Any]] = None
+    template_variable: Optional[str] = None
+
+class ReportElementResponse(ReportElementBase):
+    id: int
+    report_id: int
+    created_at: datetime
+    updated_at: datetime
+    added_by_id: int
+    added_by: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        from_attributes = True
+
+# Report generation and wizard schemas
+class ReportGenerationRequest(BaseModel):
+    """Request to start report generation"""
+    report_id: int
+    force_regenerate: bool = Field(default=False)
+    export_formats: List[ReportFormat] = Field(default_factory=lambda: [ReportFormat.MARKDOWN])
+
+class ReportWizardStep1(BaseModel):
+    """First step of report creation wizard - report type selection"""
+    report_type: ReportType
+    title: str = Field(..., min_length=1, max_length=300)
+    description: Optional[str] = None
+    template_id: Optional[int] = None
+
+class ReportWizardStep2Incident(BaseModel):
+    """Second step for incident reports - incident selection"""
+    incident_ids: List[int] = Field(..., min_items=1)
+
+class ReportWizardStep2Collective(BaseModel):
+    """Second step for collective reports - filters and criteria"""
+    date_range: Dict[str, str] = Field(..., description="start and end dates")
+    users: Optional[List[str]] = None
+    ip_addresses: Optional[List[str]] = None
+    incident_types: Optional[List[str]] = None
+    severity_levels: Optional[List[str]] = None
+    status_filters: Optional[List[str]] = None
+    affected_departments: Optional[List[str]] = None
+    playbook_types: Optional[List[str]] = None
+
+class ReportWizardComplete(BaseModel):
+    """Complete wizard data to create report"""
+    step1: ReportWizardStep1
+    step2: Union[ReportWizardStep2Incident, ReportWizardStep2Collective]
+    include_sections: List[str] = Field(default_factory=list)
+    analytics_options: List[str] = Field(default_factory=list)
+
+# Report sharing schemas
+class ReportShareBase(BaseModel):
+    shared_with_user_id: Optional[int] = None
+    shared_with_role: Optional[str] = None
+    is_public_link: bool = False
+    can_view: bool = True
+    can_download: bool = True
+    can_edit: bool = False
+    expires_at: Optional[datetime] = None
+
+class ReportShareCreate(ReportShareBase):
+    report_id: int
+
+class ReportShareResponse(ReportShareBase):
+    id: int
+    report_id: int
+    public_link_token: Optional[str] = None
+    created_at: datetime
+    created_by_id: int
+    created_by: Optional[Dict[str, Any]] = None
+    last_accessed_at: Optional[datetime] = None
+    access_count: int = 0
+    
+    class Config:
+        from_attributes = True
+
+# Report comments schemas
+class ReportCommentBase(BaseModel):
+    content: str = Field(..., min_length=1)
+    element_id: Optional[int] = None
+    parent_comment_id: Optional[int] = None
+
+class ReportCommentCreate(ReportCommentBase):
+    report_id: int
+
+class ReportCommentUpdate(BaseModel):
+    content: Optional[str] = Field(None, min_length=1)
+    is_resolved: Optional[bool] = None
+
+class ReportCommentResponse(ReportCommentBase):
+    id: int
+    report_id: int
+    created_at: datetime
+    updated_at: datetime
+    created_by_id: int
+    created_by: Optional[Dict[str, Any]] = None
+    is_resolved: bool = False
+    resolved_by_id: Optional[int] = None
+    resolved_by: Optional[Dict[str, Any]] = None
+    resolved_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+
+# Search and filtering schemas
+class ReportSearchRequest(BaseModel):
+    search: Optional[str] = None
+    report_type: Optional[ReportType] = None
+    status: Optional[ReportStatus] = None
+    created_by_id: Optional[int] = None
+    template_id: Optional[int] = None
+    tags: Optional[List[str]] = None
+    date_range: Optional[Dict[str, str]] = None  # start and end dates
+    page: int = Field(1, ge=1)
+    size: int = Field(20, ge=1, le=100)
+    sort_by: str = Field("created_at", description="Field to sort by")
+    sort_order: str = Field("desc", pattern="^(asc|desc)$")
+
+class ReportListResponse(BaseModel):
+    """Paginated response for report listing"""
+    reports: List[ReportListItem]
+    total: int
+    page: int
+    size: int
+    total_pages: int
+    has_next: bool
+    has_prev: bool
+
+# Analytics and statistics schemas
+class ReportStatsResponse(BaseModel):
+    """Report statistics and analytics"""
+    total_reports: int
+    reports_by_type: Dict[str, int]
+    reports_by_status: Dict[str, int]
+    reports_this_month: int
+    reports_this_week: int
+    avg_generation_time: Optional[float] = None
+    most_used_templates: List[Dict[str, Any]]
+    recent_activity: List[Dict[str, Any]]
+
+# Export and download schemas
+class ReportExportRequest(BaseModel):
+    """Request to export report in specific format"""
+    format: ReportFormat
+    include_attachments: bool = False
+    include_metadata: bool = True
+
+class ReportExportResponse(BaseModel):
+    """Response for report export"""
+    download_url: str
+    file_name: str
+    file_size_bytes: int
+    format: ReportFormat
+    expires_at: datetime
+
+# Data source schemas for report building
+class AvailableDataSource(BaseModel):
+    """Available data sources for building reports"""
+    source_type: str  # "user_input", "incident_data", "analytics", "playbook_data"
+    source_id: str
+    display_name: str
+    description: Optional[str] = None
+    data_type: str  # "text", "number", "date", "json", "list"
+    sample_value: Optional[str] = None
+    available_in_sections: List[str] = Field(default_factory=list)
+
+class ReportBuildingContext(BaseModel):
+    """Context data for building reports"""
+    available_incidents: List[Dict[str, Any]]
+    available_user_inputs: List[Dict[str, Any]]
+    available_analytics: List[Dict[str, Any]]
+    template_variables: List[str]
+    data_sources: List[AvailableDataSource]
+
+# Bulk operations
+class BulkReportOperation(BaseModel):
+    """Bulk operations on multiple reports"""
+    report_ids: List[int] = Field(..., min_items=1)
+    operation: str = Field(..., pattern="^(delete|archive|export|share)$")
+    operation_params: Optional[Dict[str, Any]] = None
+
+class BulkReportOperationResponse(BaseModel):
+    """Response for bulk operations"""
+    success: bool
+    processed_count: int
+    failed_count: int
+    errors: List[str] = Field(default_factory=list)
+    results: Dict[str, Any] = Field(default_factory=dict)
