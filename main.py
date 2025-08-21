@@ -11,6 +11,7 @@ from siem_routes.playbooks import router as playbook_router
 from siem_routes.endpoint_tokens import router as endpoint_tokens_router
 from siem_routes.incident_flow import router as incident_flow_router
 from siem_routes.incidents import router as incidents_router
+from siem_routes.report_templates import router as report_templates_router
 from routes.alert import router as alert_router
 from schemas import HealthCheck, ErrorResponse
 from ws.incidents import websocket_endpoint, cleanup_connections_task
@@ -109,6 +110,7 @@ app.include_router(endpoint_tokens_router)
 app.include_router(incident_flow_router)
 app.include_router(incidents_router)
 app.include_router(alert_router)
+app.include_router(report_templates_router)
 
 if __name__ == "__main__":
     import uvicorn

@@ -72,6 +72,10 @@ class User(Base):
     lead_flows = relationship("IncidentFlow", foreign_keys="IncidentFlow.lead_analyst_id", back_populates="lead_analyst")
     created_flows = relationship("IncidentFlow", foreign_keys="IncidentFlow.created_by_id", back_populates="created_by")
     
+    # Report templates
+    created_report_templates = relationship("ReportTemplate", foreign_keys="[ReportTemplate.created_by_id]", back_populates="created_by")
+    updated_report_templates = relationship("ReportTemplate", foreign_keys="[ReportTemplate.updated_by_id]", back_populates="updated_by")
+
     def __repr__(self):
         return f"<User(username='{self.username}', role='{self.role}', active={self.is_active})>"
 

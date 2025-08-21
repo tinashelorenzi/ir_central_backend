@@ -36,3 +36,4 @@ from models.incident_flow import (
     IncidentFlow, IncidentFlowStep, IncidentFlowUserInput, IncidentFlowArtifact,
     IncidentFlowStatus, StepStatus, StepType
 )
+from models.report_templates import ReportTemplate, ReportTemplateStatus

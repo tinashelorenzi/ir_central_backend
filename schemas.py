@@ -2011,3 +2011,177 @@ class FlowCompletionRequest(BaseModel):
         if v not in allowed:
             raise ValueError(f'Incident status must be one of: {allowed}')
         return v
+
+class ReportTemplateBase(BaseModel):
+    """Base report template fields"""
+    name: str = Field(..., min_length=1, max_length=200, description="Template name")
+    description: Optional[str] = Field(None, max_length=1000, description="Template description")
+    author: str = Field(..., min_length=1, max_length=100, description="Template author")
+    content: str = Field(..., min_length=1, description="HTML/CSS template content")
+    version: str = Field("1.0", max_length=20, description="Template version")
+    tags: Optional[List[str]] = Field(None, description="Tags for categorization")
+    incident_types: Optional[List[str]] = Field(None, description="Applicable incident types")
+    is_default: bool = Field(False, description="Is this the default template")
+    requires_approval: bool = Field(False, description="Requires approval before use")
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Template name cannot be empty')
+        return v.strip()
+    
+    @validator('author')
+    def validate_author(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Author cannot be empty')
+        return v.strip()
+    
+    @validator('content')
+    def validate_content(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Template content cannot be empty')
+        return v.strip()
+    
+    @validator('tags')
+    def validate_tags(cls, v):
+        if v is None:
+            return v
+        # Remove empty strings and strip whitespace
+        cleaned_tags = [tag.strip() for tag in v if tag and tag.strip()]
+        return cleaned_tags if cleaned_tags else None
+    
+    @validator('incident_types')
+    def validate_incident_types(cls, v):
+        if v is None:
+            return v
+        # Remove empty strings and strip whitespace
+        cleaned_types = [itype.strip() for itype in v if itype and itype.strip()]
+        return cleaned_types if cleaned_types else None
+
+class ReportTemplateCreate(ReportTemplateBase):
+    """Schema for creating a new report template"""
+    pass
+
+class ReportTemplateUpdate(BaseModel):
+    """Schema for updating a report template"""
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = Field(None, max_length=1000)
+    author: Optional[str] = Field(None, min_length=1, max_length=100)
+    content: Optional[str] = Field(None, min_length=1)
+    version: Optional[str] = Field(None, max_length=20)
+    tags: Optional[List[str]] = None
+    incident_types: Optional[List[str]] = None
+    is_default: Optional[bool] = None
+    requires_approval: Optional[bool] = None
+    status: Optional[str] = Field(None, pattern="^(draft|active|archived)$")
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if v is not None and (not v or len(v.strip()) == 0):
+            raise ValueError('Template name cannot be empty')
+        return v.strip() if v else v
+    
+    @validator('author')
+    def validate_author(cls, v):
+        if v is not None and (not v or len(v.strip()) == 0):
+            raise ValueError('Author cannot be empty')
+        return v.strip() if v else v
+    
+    @validator('content')
+    def validate_content(cls, v):
+        if v is not None and (not v or len(v.strip()) == 0):
+            raise ValueError('Template content cannot be empty')
+        return v.strip() if v else v
+    
+    @validator('tags')
+    def validate_tags(cls, v):
+        if v is None:
+            return v
+        # Remove empty strings and strip whitespace
+        cleaned_tags = [tag.strip() for tag in v if tag and tag.strip()]
+        return cleaned_tags if cleaned_tags else None
+    
+    @validator('incident_types')
+    def validate_incident_types(cls, v):
+        if v is None:
+            return v
+        # Remove empty strings and strip whitespace
+        cleaned_types = [itype.strip() for itype in v if itype and itype.strip()]
+        return cleaned_types if cleaned_types else None
+
+class ReportTemplateResponse(ReportTemplateBase):
+    """Schema for report template responses"""
+    id: int
+    status: str
+    usage_count: int
+    last_used: Optional[datetime] = None
+    created_by_id: int
+    created_at: datetime
+    updated_at: datetime
+    updated_by_id: Optional[int] = None
+    
+    # Nested user information (optional)
+    created_by: Optional[dict] = None
+    updated_by: Optional[dict] = None
+    
+    class Config:
+        from_attributes = True
+
+class ReportTemplateSearchRequest(BaseModel):
+    """Schema for searching report templates"""
+    search: Optional[str] = Field(None, description="Search in name, description, author")
+    status: Optional[str] = Field(None, pattern="^(draft|active|archived)$")
+    author: Optional[str] = Field(None, description="Filter by author")
+    tags: Optional[List[str]] = Field(None, description="Filter by tags")
+    incident_types: Optional[List[str]] = Field(None, description="Filter by incident types")
+    is_default: Optional[bool] = Field(None, description="Filter by default status")
+    created_by_id: Optional[int] = Field(None, description="Filter by creator")
+    
+    # Pagination
+    page: int = Field(1, ge=1, description="Page number")
+    limit: int = Field(10, ge=1, le=100, description="Items per page")
+    
+    # Sorting
+    sort_by: str = Field("updated_at", pattern="^(name|author|created_at|updated_at|usage_count|last_used)$")
+    sort_order: str = Field("desc", pattern="^(asc|desc)$")
+
+class ReportTemplateListResponse(BaseModel):
+    """Schema for paginated report template list"""
+    templates: List[ReportTemplateResponse]
+    total: int
+    page: int
+    limit: int
+    pages: int
+
+class ReportTemplateStatsResponse(BaseModel):
+    """Schema for report template statistics"""
+    total_templates: int
+    active_templates: int
+    draft_templates: int
+    archived_templates: int
+    most_used_template: Optional[dict] = None
+    recently_created: List[dict] = Field(default_factory=list)
+    authors: List[dict] = Field(default_factory=list)  # Author usage statistics
+
+class BulkReportTemplateOperation(BaseModel):
+    """Schema for bulk operations on report templates"""
+    template_ids: List[int] = Field(..., min_items=1, max_items=50)
+    operation: str = Field(..., pattern="^(activate|archive|delete)$")
+    
+class ReportTemplateCloneRequest(BaseModel):
+    """Schema for cloning a report template"""
+    name: str = Field(..., min_length=1, max_length=200, description="New template name")
+    author: str = Field(..., min_length=1, max_length=100, description="New template author")
+    description: Optional[str] = Field(None, max_length=1000, description="New template description")
+    
+    @validator('name')
+    def validate_name(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Template name cannot be empty')
+        return v.strip()
+    
+    @validator('author')
+    def validate_author(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Author cannot be empty')
+        return v.strip()
