@@ -223,7 +223,7 @@ async def create_incident_flow(
     db.refresh(flow)
     
     # Initialize steps from playbook definition
-    background_tasks.add_task(initialize_flow_steps, flow.id)
+    initialize_flow_steps_sync(flow.id, db)
     
     # Update playbook usage stats
     playbook.usage_count += 1
@@ -353,13 +353,13 @@ async def update_incident_flow(
     
     return await get_incident_flow_response(flow, db)
 
-@router.delete("/{flow_id}")
+@router.delete("/{flow_id}", response_model=MessageResponse)
 async def delete_incident_flow(
     flow_id: str,
     current_user: User = Depends(require_manager_or_above),
     db: Session = Depends(get_db)
 ):
-    """Delete incident flow (admin only)"""
+    """Delete incident flow"""
     
     flow = db.query(IncidentFlow).filter(IncidentFlow.flow_id == flow_id).first()
     
@@ -369,11 +369,12 @@ async def delete_incident_flow(
             detail="Incident flow not found"
         )
     
-    # Only allow deletion if not completed or in critical status
-    if flow.status in [IncidentFlowStatus.IN_PROGRESS, IncidentFlowStatus.WAITING_INPUT]:
+    # Allow deletion of flows that are not completed
+    # Only prevent deletion of completed flows to preserve history
+    if flow.status == IncidentFlowStatus.COMPLETED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete active incident flow"
+            detail="Cannot delete completed incident flow - use archive instead"
         )
     
     db.delete(flow)
@@ -1253,6 +1254,66 @@ def initialize_flow_steps(flow_id: int):
     finally:
         session.close()
 
+def initialize_flow_steps_sync(flow_id: int, db: Session):
+    """Initialize steps from playbook definition synchronously"""
+    
+    try:
+        flow = db.query(IncidentFlow).filter(IncidentFlow.id == flow_id).first()
+        if not flow or not flow.playbook_snapshot:
+            return
+        
+        phases = flow.playbook_snapshot.get("phases", [])
+        global_step_index = 0
+        
+        for phase_index, phase in enumerate(phases):
+            phase_name = phase.get("name") or phase.get("title") or f"phase_{phase_index+1}"
+            if not phase_name.strip():
+                phase_name = f"Phase {phase_index + 1}"
+            steps = phase.get("steps", [])
+            
+            for step_index, step_def in enumerate(steps):
+                step = IncidentFlowStep(
+                    flow_id=flow.id,
+                    phase_name=phase_name,
+                    step_name=step_def.get("name", f"step_{global_step_index}"),
+                    step_index=step_index,
+                    global_step_index=global_step_index,
+                    step_type=step_def.get("type", StepType.MANUAL_ACTION),
+                    title=step_def.get("title", ""),
+                    description=step_def.get("description", ""),
+                    instructions=step_def.get("instructions"),
+                    expected_duration=step_def.get("expected_duration"),
+                    input_schema=step_def.get("input_schema"),
+                    validation_rules=step_def.get("validation_rules"),
+                    depends_on_steps=step_def.get("depends_on", []),
+                    requires_approval=step_def.get("requires_approval", False),
+                    is_automated=step_def.get("type") in ["automated_action", "notification"],
+                    automation_script=step_def.get("automation")
+                )
+                
+                db.add(step)
+                global_step_index += 1
+        
+        # Update flow status to IN_PROGRESS since steps are now ready
+        flow.status = IncidentFlowStatus.IN_PROGRESS
+        flow.last_activity_at = datetime.utcnow()
+        
+        # Find the first step to set as current
+        first_step = db.query(IncidentFlowStep).filter(
+            IncidentFlowStep.flow_id == flow.id
+        ).order_by(IncidentFlowStep.global_step_index).first()
+        
+        if first_step:
+            flow.current_step_name = first_step.step_name
+            flow.current_phase = first_step.phase_name
+        
+        db.commit()
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Error initializing flow steps: {e}")
+        raise
+
 def update_flow_progress(flow_id: int):
     """Update flow progress based on step completion"""
     
@@ -1750,3 +1811,127 @@ async def complete_flow_with_status(
     # Return the updated flow response
     return await get_incident_flow_response(flow, db)
 
+@router.delete("/{flow_id}", response_model=MessageResponse)
+async def delete_incident_flow(
+    flow_id: str,
+    current_user: User = Depends(require_manager_or_above),
+    db: Session = Depends(get_db)
+):
+    """Delete an incident flow and all its steps"""
+    
+    flow = db.query(IncidentFlow).filter(IncidentFlow.flow_id == flow_id).first()
+    
+    if not flow:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Incident flow not found"
+        )
+    
+    # Check if flow is in progress - maybe warn before deleting
+    if flow.status == IncidentFlowStatus.IN_PROGRESS:
+        # You might want to add additional validation here
+        pass
+    
+    # Delete the flow (cascade will delete steps)
+    db.delete(flow)
+    db.commit()
+    
+    return MessageResponse(message=f"Incident flow {flow_id} deleted successfully")
+
+@router.post("/{flow_id}/initialize-steps", response_model=MessageResponse)
+async def force_initialize_flow_steps(
+    flow_id: str,
+    current_user: User = Depends(require_manager_or_above),
+    db: Session = Depends(get_db)
+):
+    """Force initialize steps for a flow that has no steps"""
+    
+    flow = db.query(IncidentFlow).options(
+        joinedload(IncidentFlow.playbook)
+    ).filter(IncidentFlow.flow_id == flow_id).first()
+    
+    if not flow:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Incident flow not found"
+        )
+    
+    # Check if steps already exist
+    existing_steps_count = db.query(IncidentFlowStep).filter(
+        IncidentFlowStep.flow_id == flow.id
+    ).count()
+    
+    if existing_steps_count > 0:
+        return MessageResponse(message=f"Flow {flow_id} already has {existing_steps_count} steps")
+    
+    # Initialize steps synchronously
+    try:
+        if not flow.playbook_snapshot:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Flow has no playbook snapshot to initialize from"
+            )
+        
+        phases = flow.playbook_snapshot.get("phases", [])
+        if not phases:
+            return MessageResponse(message=f"Flow {flow_id} playbook has no phases defined")
+        
+        global_step_index = 0
+        total_steps_created = 0
+        
+        for phase_index, phase in enumerate(phases):
+            phase_name = phase.get("name") or phase.get("title") or f"phase_{phase_index+1}"
+            if not phase_name.strip():
+                phase_name = f"Phase {phase_index + 1}"
+            
+            steps = phase.get("steps", [])
+            
+            for step_index, step_def in enumerate(steps):
+                step = IncidentFlowStep(
+                    flow_id=flow.id,
+                    phase_name=phase_name,
+                    step_name=step_def.get("name", f"step_{global_step_index}"),
+                    step_index=step_index,
+                    global_step_index=global_step_index,
+                    step_type=step_def.get("type", StepType.MANUAL_ACTION),
+                    title=step_def.get("title", ""),
+                    description=step_def.get("description", ""),
+                    instructions=step_def.get("instructions"),
+                    expected_duration=step_def.get("expected_duration"),
+                    input_schema=step_def.get("input_schema"),
+                    validation_rules=step_def.get("validation_rules"),
+                    depends_on_steps=step_def.get("depends_on", []),
+                    requires_approval=step_def.get("requires_approval", False),
+                    is_automated=step_def.get("type") in ["automated_action", "automation", "notification"],
+                    automation_script=step_def.get("automation_script")
+                    # Removed automation_config and created_at as they don't exist in the model
+                )
+                
+                db.add(step)
+                global_step_index += 1
+                total_steps_created += 1
+        
+        # Update flow totals
+        flow.total_steps = total_steps_created
+        flow.status = IncidentFlowStatus.IN_PROGRESS
+        flow.last_activity_at = datetime.utcnow()
+        
+        # Set current step to first step
+        first_step = db.query(IncidentFlowStep).filter(
+            IncidentFlowStep.flow_id == flow.id
+        ).order_by(IncidentFlowStep.global_step_index).first()
+        
+        if first_step:
+            flow.current_step_name = first_step.step_name
+            flow.current_phase = first_step.phase_name
+        
+        db.commit()
+        
+        return MessageResponse(message=f"Successfully initialized {total_steps_created} steps for flow {flow_id}")
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initialize steps: {str(e)}"
+        )
