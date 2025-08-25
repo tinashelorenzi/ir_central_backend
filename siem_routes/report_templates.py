@@ -199,6 +199,8 @@ async def list_report_templates(
         
         # Build query
         query = build_template_query(db, search_params, current_user)
+
+        print(f"Query: {query}")
         
         # Apply sorting
         sort_column = getattr(ReportTemplate, search_params.sort_by)
@@ -207,16 +209,22 @@ async def list_report_templates(
         else:
             query = query.order_by(asc(sort_column))
         
+        
         # Get total count
         total = query.count()
+        print(f"Total templates: {total}")
         
         # Apply pagination
         offset = (search_params.page - 1) * search_params.limit
         templates = query.offset(offset).limit(search_params.limit).all()
+
+        print(f"Templates: {templates}")
         
         # Format response
         template_responses = [format_template_response(template) for template in templates]
         
+        print(f"Template responses: {template_responses}")
+
         return ReportTemplateListResponse(
             templates=template_responses,
             total=total,
@@ -241,6 +249,7 @@ async def get_report_template(
     """
     Get a specific report template by ID.
     """
+    print()
     try:
         template = db.query(ReportTemplate).options(
             joinedload(ReportTemplate.created_by),

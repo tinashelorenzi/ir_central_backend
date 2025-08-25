@@ -2280,7 +2280,8 @@ class ReportElementBase(BaseModel):
     template_variable: Optional[str] = Field(None, max_length=100)
 
 class ReportElementCreate(ReportElementBase):
-    report_id: int
+    #report_id: int
+    pass
 
 class ReportElementUpdate(BaseModel):
     element_type: Optional[str] = None

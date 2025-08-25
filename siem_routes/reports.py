@@ -56,6 +56,34 @@ router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 # HELPER FUNCTIONS
 # ============================================================================
 
+def format_element_response(element: ReportElement) -> dict:
+    """Format report element for API response with related data"""
+    response_data = {
+        "id": element.id,
+        "report_id": element.report_id,
+        "element_type": element.element_type,
+        "element_key": element.element_key,
+        "display_name": element.display_name,
+        "section_name": element.section_name,
+        "position_order": element.position_order,
+        "element_data": element.element_data,
+        "template_variable": element.template_variable,
+        "created_at": element.created_at,
+        "updated_at": element.updated_at,
+        "added_by_id": element.added_by_id,
+        "added_by": None
+    }
+    
+    # Add user information if available
+    if element.added_by:
+        response_data["added_by"] = {
+            "id": element.added_by.id,
+            "username": element.added_by.username,
+            "full_name": element.added_by.full_name
+        }
+    
+    return response_data
+
 def format_report_response(report: Report, include_elements: bool = False) -> dict:
     """Format report for API response with related data"""
     response_data = report.to_dict()
@@ -68,12 +96,18 @@ def format_report_response(report: Report, include_elements: bool = False) -> di
             "full_name": report.created_by.full_name
         }
     
-    # Add template information
+    # Add template information - FIXED: Include content field
     if report.template:
         response_data["template"] = {
             "id": report.template.id,
             "name": report.template.name,
-            "description": report.template.description
+            "description": report.template.description,
+            "content": report.template.content,  # <- ADD THIS LINE
+            "author": report.template.author,
+            "version": report.template.version,
+            "status": report.template.status,
+            "tags": report.template.tags,
+            "incident_types": report.template.incident_types
         }
     
     # Add elements if requested
@@ -594,11 +628,14 @@ async def get_report_elements(
             detail="Not authorized to view this report"
         )
     
-    elements = db.query(ReportElement).filter(
+    elements = db.query(ReportElement).options(
+        joinedload(ReportElement.added_by)
+    ).filter(
         ReportElement.report_id == report_id
     ).order_by(ReportElement.section_name, ReportElement.position_order).all()
     
-    return [ReportElementResponse.from_orm(element) for element in elements]
+    # FIXED: Use proper response formatting
+    return [ReportElementResponse(**format_element_response(element)) for element in elements]
 
 @router.post("/{report_id}/elements", response_model=ReportElementResponse)
 async def add_report_element(
@@ -611,53 +648,89 @@ async def add_report_element(
     Add an element to a report.
     """
     
-    report = db.query(Report).filter(Report.id == report_id).first()
-    if not report:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report not found"
+    # Add detailed logging for debugging
+    logger.info(f"Adding element to report {report_id}")
+    logger.info(f"Element data received: {element_data.dict()}")
+    
+    try:
+        # Check if report exists
+        report = db.query(Report).filter(Report.id == report_id).first()
+        if not report:
+            logger.error(f"Report {report_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Report not found"
+            )
+        
+        # Check permissions
+        if (current_user.role not in [UserRole.MANAGER, UserRole.ADMIN] and 
+            report.created_by_id != current_user.id):
+            logger.error(f"User {current_user.id} not authorized for report {report_id}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to modify this report"
+            )
+        
+        # Validate element data based on type
+        if element_data.element_type == "user_input":
+            # Validate that the referenced user input exists (if specified)
+            if "execution_id" in element_data.element_data and "field_name" in element_data.element_data:
+                user_input = db.query(PlaybookUserInput).filter(
+                    PlaybookUserInput.execution_id == element_data.element_data["execution_id"],
+                    PlaybookUserInput.field_name == element_data.element_data["field_name"]
+                ).first()
+                if not user_input:
+                    logger.warning(f"Referenced user input not found: execution_id={element_data.element_data['execution_id']}, field_name={element_data.element_data['field_name']}")
+                    # Don't raise error for custom inputs - they don't have execution_id/field_name
+                    if "value" not in element_data.element_data:
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Referenced user input not found"
+                        )
+        
+        # Create element - report_id comes from the URL parameter, not the request body
+        element = ReportElement(
+            report_id=report_id,  # Use the report_id from URL path parameter
+            element_type=element_data.element_type,
+            element_key=element_data.element_key,
+            display_name=element_data.display_name,
+            section_name=element_data.section_name,
+            position_order=element_data.position_order,
+            element_data=element_data.element_data,
+            template_variable=element_data.template_variable,
+            added_by_id=current_user.id
         )
-    
-    # Check permissions
-    if (current_user.role not in [UserRole.MANAGER, UserRole.ADMIN] and 
-        report.created_by_id != current_user.id):
+        
+        logger.info(f"Creating element: type={element.element_type}, key={element.element_key}")
+        
+        db.add(element)
+        db.commit()
+        db.refresh(element)
+        
+        # Load the user relationship for the response
+        element = db.query(ReportElement).options(
+            joinedload(ReportElement.added_by)
+        ).filter(ReportElement.id == element.id).first()
+        
+        logger.info(f"Element created successfully with ID: {element.id}")
+        
+        # FIXED: Use proper response formatting instead of from_orm
+        return ReportElementResponse(**format_element_response(element))
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error creating element: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to modify this report"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create element: {str(e)}"
         )
-    
-    # Validate element data based on type
-    if element_data.element_type == "user_input":
-        # Validate that the referenced user input exists
-        if "execution_id" in element_data.element_data and "field_name" in element_data.element_data:
-            user_input = db.query(PlaybookUserInput).filter(
-                PlaybookUserInput.execution_id == element_data.element_data["execution_id"],
-                PlaybookUserInput.field_name == element_data.element_data["field_name"]
-            ).first()
-            if not user_input:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Referenced user input not found"
-                )
-    
-    # Create element
-    element = ReportElement(
-        report_id=report_id,
-        element_type=element_data.element_type,
-        element_key=element_data.element_key,
-        display_name=element_data.display_name,
-        section_name=element_data.section_name,
-        position_order=element_data.position_order,
-        element_data=element_data.element_data,
-        template_variable=element_data.template_variable,
-        added_by_id=current_user.id
-    )
-    
-    db.add(element)
-    db.commit()
-    db.refresh(element)
-    
-    return ReportElementResponse.from_orm(element)
 
 @router.put("/{report_id}/elements/{element_id}", response_model=ReportElementResponse)
 async def update_report_element(
@@ -1018,18 +1091,346 @@ async def render_report_content(db: Session, report: Report) -> str:
     
     # Add default variables
     template_vars.update({
+        "report": report,  # Add the full report object
         "report_title": report.title,
         "report_description": report.description or "",
         "generated_date": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        "report_id": report.id
+        "report_id": report.id,
+        "current_date": datetime.utcnow(),
+        "current_time": datetime.utcnow(),
+        "report_type": report.report_type,
+        "report_status": report.status,
+        "created_at": report.created_at,
+        "updated_at": report.updated_at,
+        "elements": report.elements,  # Add elements for template access
+        "template": report.template,  # Add template object
+        "created_by": report.created_by if hasattr(report, 'created_by') else None
     })
+    
+    # Add common report template variables with default values
+    # These are commonly used in report templates and should have fallback values
+    # Create object-like structures that can handle attribute access
+    class DictObject:
+        def __init__(self, data):
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    setattr(self, key, DictObject(value))
+                else:
+                    setattr(self, key, value)
+        
+        def __getitem__(self, key):
+            return getattr(self, key, "N/A")
+        
+        def get(self, key, default="N/A"):
+            return getattr(self, key, default)
+    
+    common_vars = {
+        "metrics": DictObject({
+            "total_incidents": 0, 
+            "resolved_incidents": 0, 
+            "mttr_hours": 0, 
+            "mttd_hours": 0,
+            "month_over_month_change": 0,
+            "trend_direction": "stable",
+            "new_controls": 0,
+            "critical_incidents": 0,
+            "high_incidents": 0,
+            "medium_incidents": 0,
+            "low_incidents": 0,
+            "security_training_sessions": 0
+        }),
+        "categories": DictObject({
+            "malware_count": 0, 
+            "phishing_count": 0, 
+            "network_intrusion_count": 0,
+            "dlp_count": 0,
+            "unauthorized_access_count": 0,
+            "policy_violation_count": 0,
+            "malware_change": 0,
+            "phishing_change": 0,
+            "network_intrusion_change": 0,
+            "dlp_change": 0,
+            "unauthorized_access_change": 0,
+            "policy_violation_change": 0
+        }),
+        "controls": DictObject({
+            "email_security": DictObject({
+                "status": "Active",
+                "alerts": 0,
+                "effectiveness": 0,
+                "true_positives": 0,
+                "false_positives": 0
+            }), 
+            "edr": DictObject({
+                "status": "Active",
+                "alerts": 0,
+                "effectiveness": 0,
+                "true_positives": 0,
+                "false_positives": 0
+            }), 
+            "nids": DictObject({
+                "status": "Active",
+                "alerts": 0,
+                "effectiveness": 0,
+                "true_positives": 0,
+                "false_positives": 0
+            }),
+            "dlp": DictObject({
+                "status": "Active",
+                "alerts": 0,
+                "effectiveness": 0,
+                "true_positives": 0,
+                "false_positives": 0
+            })
+        }),
+        "team": DictObject({
+            "total_hours": 0, 
+            "incidents_handled": 0,
+            "avg_response_time": 0,
+            "training_hours": 0,
+            "achievement_1": "N/A",
+            "achievement_2": "N/A",
+            "achievement_3": "N/A",
+            "achievement_4": "N/A"
+        }),
+        "compliance": DictObject({
+            "gdpr_status": "Compliant", 
+            "sox_status": "Compliant",
+            "hipaa_status": "Compliant",
+            "pci_status": "Compliant",
+            "gdpr_incidents": 0,
+            "sox_incidents": 0,
+            "hipaa_incidents": 0,
+            "pci_incidents": 0
+        }),
+        "audit": DictObject({
+            "activity_1": "N/A", 
+            "activity_2": "N/A",
+            "activity_3": "N/A"
+        }),
+        "recommendations": DictObject({
+            "immediate_1": "N/A", 
+            "short_term_1": "N/A",
+            "immediate_2": "N/A",
+            "immediate_3": "N/A",
+            "short_term_2": "N/A",
+            "short_term_3": "N/A",
+            "strategic_1": "N/A",
+            "strategic_2": "N/A",
+            "strategic_3": "N/A"
+        }),
+        "system": DictObject({
+            "name": "N/A", 
+            "version": "N/A"
+        }),
+        "contact": DictObject({
+            "email": "N/A", 
+            "emergency_phone": "N/A"
+        }),
+        "analysis": DictObject({
+            "malware_trend": "N/A", 
+            "phishing_trend": "N/A",
+            "malware_vector": "N/A",
+            "vulnerability_trends": "N/A",
+            "threat_actor_activity": "N/A",
+            "phishing_description": "N/A",
+            "geographic_patterns": "N/A"
+        }),
+        "chart": DictObject({
+            "incident_types": "N/A", 
+            "monthly_trends": "N/A"
+        }),
+        "incident": DictObject({
+            "id": "N/A", 
+            "title": "N/A", 
+            "status": "N/A",
+            "detected_at": "N/A",
+            "business_impact": "N/A",
+            "severity": "N/A",
+            "category": "N/A",
+            "resolved_at": "N/A"
+        }),
+        "report": DictObject({
+            "month": "N/A",
+            "year": "N/A",
+            "generated_at": "N/A",
+            "prepared_by": "N/A"
+        })
+    }
+    
+    # Only add common variables if they don't already exist
+    for var_name, default_value in common_vars.items():
+        if var_name not in template_vars:
+            template_vars[var_name] = default_value
     
     # Render template using Jinja2
     try:
-        from jinja2 import Template
-        template = Template(template_content)
-        rendered_content = template.render(**template_vars)
-        return rendered_content
+        from jinja2 import Environment, Template
+        
+        # Create Jinja2 environment with custom filters
+        env = Environment()
+        
+        # Add custom date filter
+        def date_filter(value, format_string='%Y-%m-%d'):
+            if value is None:
+                return ''
+            if hasattr(value, 'strftime'):
+                return value.strftime(format_string)
+            return str(value)
+        
+        # Add datetime filter
+        def datetime_filter(value, format_string='%Y-%m-%d %H:%M:%S'):
+            if value is None:
+                return ''
+            if hasattr(value, 'strftime'):
+                return value.strftime(format_string)
+            return str(value)
+        
+        # Add title case filter
+        def title_filter(value):
+            if value is None:
+                return ''
+            return str(value).title()
+        
+        # Add upper case filter
+        def upper_filter(value):
+            if value is None:
+                return ''
+            return str(value).upper()
+        
+        # Add lower case filter
+        def lower_filter(value):
+            if value is None:
+                return ''
+            return str(value).lower()
+        
+        # Add length filter
+        def length_filter(value):
+            if value is None:
+                return 0
+            return len(value)
+        
+        # Add default filter
+        def default_filter(value, default_value=''):
+            if value is None or value == '':
+                return default_value
+            return value
+        
+        # Add truncate filter
+        def truncate_filter(value, length=50, end='...'):
+            if value is None:
+                return ''
+            value_str = str(value)
+            if len(value_str) <= length:
+                return value_str
+            return value_str[:length] + end
+        
+        # Add join filter
+        def join_filter(value, separator=', '):
+            if value is None:
+                return ''
+            if isinstance(value, (list, tuple)):
+                return separator.join(str(item) for item in value)
+            return str(value)
+        
+        # Add round filter
+        def round_filter(value, precision=2):
+            if value is None:
+                return 0
+            try:
+                return round(float(value), precision)
+            except (ValueError, TypeError):
+                return value
+        
+        # Add format_number filter
+        def format_number_filter(value, format_type='decimal'):
+            if value is None:
+                return '0'
+            try:
+                if format_type == 'currency':
+                    return f"${float(value):,.2f}"
+                elif format_type == 'percentage':
+                    return f"{float(value):.1f}%"
+                else:
+                    return f"{float(value):,.2f}"
+            except (ValueError, TypeError):
+                return str(value)
+        
+        # Register filters
+        env.filters['date'] = date_filter
+        env.filters['datetime'] = datetime_filter
+        env.filters['title'] = title_filter
+        env.filters['upper'] = upper_filter
+        env.filters['lower'] = lower_filter
+        env.filters['length'] = length_filter
+        env.filters['default'] = default_filter
+        env.filters['truncate'] = truncate_filter
+        env.filters['join'] = join_filter
+        env.filters['round'] = round_filter
+        env.filters['format_number'] = format_number_filter
+        
+        # Create template with the environment
+        template = env.from_string(template_content)
+        
+        # Add error handling for template rendering
+        try:
+            rendered_content = template.render(**template_vars)
+            return rendered_content
+        except Exception as render_error:
+            logger.error(f"Template rendering error: {str(render_error)}")
+            logger.error(f"Available template variables: {list(template_vars.keys())}")
+            
+            # Try to fix undefined variables by adding them with N/A values
+            if "is not defined" in str(render_error):
+                # Extract all undefined variable names from the error
+                import re
+                undefined_vars = re.findall(r"'([^']+)' is not defined", str(render_error))
+                
+                if undefined_vars:
+                    logger.info(f"Found undefined variables: {undefined_vars}")
+                    
+                    # Add each undefined variable with appropriate fallback values
+                    for var_name in undefined_vars:
+                         # Provide better fallback values based on variable name patterns
+                         if var_name in ['metrics', 'categories', 'controls', 'team', 'compliance', 'audit', 'recommendations', 'system', 'contact', 'analysis', 'chart', 'incident']:
+                             # For object-like variables, provide a default DictObject
+                             template_vars[var_name] = DictObject({"status": "N/A", "value": "N/A"})
+                         elif any(keyword in var_name.lower() for keyword in ['count', 'total', 'number', 'amount']):
+                             # For numeric variables
+                             template_vars[var_name] = 0
+                         elif any(keyword in var_name.lower() for keyword in ['date', 'time', 'created', 'updated']):
+                             # For date/time variables
+                             template_vars[var_name] = "N/A"
+                         elif any(keyword in var_name.lower() for keyword in ['status', 'state']):
+                             # For status variables
+                             template_vars[var_name] = "Unknown"
+                         else:
+                             # Default fallback
+                             template_vars[var_name] = "N/A"
+                         
+                         logger.info(f"Added undefined variable '{var_name}' with fallback value")
+                    
+                    # Try rendering again with all added variables
+                    try:
+                        rendered_content = template.render(**template_vars)
+                        logger.info(f"Successfully rendered template after adding {len(undefined_vars)} undefined variables")
+                        return rendered_content
+                    except Exception as second_error:
+                        logger.error(f"Still failed after adding undefined variables: {str(second_error)}")
+                        # Continue to the fallback error message
+            
+            # Return a fallback content with error information
+            return f"""
+# Report Generation Error
+
+**Error**: {str(render_error)}
+
+**Report ID**: {report.id}
+**Report Title**: {report.title}
+**Template**: {report.template.name if report.template else 'No template'}
+
+Please check the template syntax and available variables.
+            """
     except Exception as e:
         logger.error(f"Template rendering failed: {str(e)}")
         raise ValueError(f"Template rendering failed: {str(e)}")
