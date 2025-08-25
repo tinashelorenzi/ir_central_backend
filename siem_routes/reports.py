@@ -12,9 +12,9 @@ import logging
 import json
 import asyncio
 from pathlib import Path
-import os
+import os,traceback
 
-from database import get_db
+from database import get_db, SessionLocal
 from models.users import User, UserRole
 from models.reports import Report, ReportElement, ReportShare, ReportComment, ReportType, ReportStatus, ReportFormat
 from models.report_templates import ReportTemplate
@@ -1398,79 +1398,252 @@ async def get_report_statistics(
     """
     Get report statistics and analytics.
     Requires Manager role or above.
+    Enhanced with detailed debugging and error handling.
     """
+    logger.info(f"Starting report statistics collection for user {current_user.username}")
     
-    # Total reports
-    total_reports = db.query(Report).count()
-    
-    # Reports by type
-    type_counts = db.query(
-        Report.report_type, func.count(Report.id)
-    ).group_by(Report.report_type).all()
-    reports_by_type = {type_name: count for type_name, count in type_counts}
-    
-    # Reports by status
-    status_counts = db.query(
-        Report.status, func.count(Report.id)
-    ).group_by(Report.status).all()
-    reports_by_status = {status_name: count for status_name, count in status_counts}
-    
-    # Reports this month
-    month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    reports_this_month = db.query(Report).filter(
-        Report.created_at >= month_start
-    ).count()
-    
-    # Reports this week
-    week_start = datetime.utcnow() - timedelta(days=7)
-    reports_this_week = db.query(Report).filter(
-        Report.created_at >= week_start
-    ).count()
-    
-    # Average generation time
-    avg_gen_time = db.query(func.avg(Report.generation_time_seconds)).filter(
-        Report.generation_time_seconds.isnot(None)
-    ).scalar()
-    
-    # Most used templates
-    template_usage = db.query(
-        ReportTemplate.name, func.count(Report.id).label('usage_count')
-    ).join(Report).group_by(ReportTemplate.id, ReportTemplate.name).order_by(
-        desc('usage_count')
-    ).limit(5).all()
-    
-    most_used_templates = [
-        {"template_name": name, "usage_count": count}
-        for name, count in template_usage
-    ]
-    
-    # Recent activity
-    recent_reports = db.query(Report).order_by(
-        desc(Report.created_at)
-    ).limit(10).all()
-    
-    recent_activity = [
-        {
-            "report_id": report.id,
-            "title": report.title,
-            "type": report.report_type,
-            "status": report.status,
-            "created_at": report.created_at.isoformat(),
-            "created_by": report.created_by.username if report.created_by else None
+    try:
+        print("Starting report statistics collection for user", current_user.username)
+        # Initialize response data with defaults
+        stats_data = {
+            "total_reports": 0,
+            "reports_by_type": {},
+            "reports_by_status": {},
+            "reports_this_month": 0,
+            "reports_this_week": 0,
+            "avg_generation_time": None,
+            "most_used_templates": [],
+            "recent_activity": []
         }
-        for report in recent_reports
-    ]
+        
+        # 1. Total reports
+        logger.debug("Fetching total reports count...")
+        try:
+            total_reports = db.query(Report).count()
+            stats_data["total_reports"] = total_reports
+            logger.info(f"Total reports: {total_reports}")
+        except Exception as e:
+            logger.error(f"Error getting total reports count: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get total reports count: {str(e)}"
+            )
+        
+        # 2. Reports by type
+        logger.debug("Fetching reports by type...")
+        try:
+            type_counts = db.query(
+                Report.report_type, func.count(Report.id)
+            ).group_by(Report.report_type).all()
+            
+            reports_by_type = {str(type_name): count for type_name, count in type_counts}
+            stats_data["reports_by_type"] = reports_by_type
+            logger.info(f"Reports by type: {reports_by_type}")
+        except Exception as e:
+            logger.error(f"Error getting reports by type: {str(e)}")
+            # Continue with empty dict instead of failing
+            stats_data["reports_by_type"] = {}
+        
+        # 3. Reports by status
+        logger.debug("Fetching reports by status...")
+        try:
+            status_counts = db.query(
+                Report.status, func.count(Report.id)
+            ).group_by(Report.status).all()
+            
+            reports_by_status = {str(status_name): count for status_name, count in status_counts}
+            stats_data["reports_by_status"] = reports_by_status
+            logger.info(f"Reports by status: {reports_by_status}")
+        except Exception as e:
+            logger.error(f"Error getting reports by status: {str(e)}")
+            stats_data["reports_by_status"] = {}
+        
+        # 4. Reports this month
+        logger.debug("Fetching reports this month...")
+        try:
+            month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            reports_this_month = db.query(Report).filter(
+                Report.created_at >= month_start
+            ).count()
+            stats_data["reports_this_month"] = reports_this_month
+            logger.info(f"Reports this month: {reports_this_month}")
+        except Exception as e:
+            logger.error(f"Error getting reports this month: {str(e)}")
+            stats_data["reports_this_month"] = 0
+        
+        # 5. Reports this week
+        logger.debug("Fetching reports this week...")
+        try:
+            week_start = datetime.utcnow() - timedelta(days=7)
+            reports_this_week = db.query(Report).filter(
+                Report.created_at >= week_start
+            ).count()
+            stats_data["reports_this_week"] = reports_this_week
+            logger.info(f"Reports this week: {reports_this_week}")
+        except Exception as e:
+            logger.error(f"Error getting reports this week: {str(e)}")
+            stats_data["reports_this_week"] = 0
+        
+        # 6. Average generation time
+        logger.debug("Fetching average generation time...")
+        try:
+            avg_gen_time = db.query(func.avg(Report.generation_time_seconds)).filter(
+                Report.generation_time_seconds.isnot(None)
+            ).scalar()
+            
+            # Handle case where avg_gen_time might be Decimal or None
+            if avg_gen_time is not None:
+                stats_data["avg_generation_time"] = float(avg_gen_time)
+            else:
+                stats_data["avg_generation_time"] = None
+            logger.info(f"Average generation time: {stats_data['avg_generation_time']}")
+        except Exception as e:
+            logger.error(f"Error getting average generation time: {str(e)}")
+            stats_data["avg_generation_time"] = None
+        
+        # 7. Most used templates - This is likely where the error occurs
+        logger.debug("Fetching most used templates...")
+        try:
+            # First, check if we have any reports with templates
+            reports_with_templates = db.query(Report).filter(
+                Report.template_id.isnot(None)
+            ).count()
+            logger.info(f"Reports with templates: {reports_with_templates}")
+            
+            if reports_with_templates > 0:
+                # Use explicit join condition and handle potential issues
+                template_usage_query = db.query(
+                    ReportTemplate.name, 
+                    func.count(Report.id).label('usage_count')
+                ).join(
+                    Report, ReportTemplate.id == Report.template_id
+                ).group_by(
+                    ReportTemplate.id, ReportTemplate.name
+                ).order_by(
+                    desc('usage_count')
+                ).limit(5)
+                
+                logger.debug(f"Template usage query: {str(template_usage_query)}")
+                template_usage = template_usage_query.all()
+                
+                most_used_templates = [
+                    {"template_name": str(name), "usage_count": int(count)}
+                    for name, count in template_usage
+                ]
+                logger.info(f"Most used templates: {most_used_templates}")
+            else:
+                logger.info("No reports with templates found, using empty list")
+                most_used_templates = []
+            
+            stats_data["most_used_templates"] = most_used_templates
+            
+        except Exception as e:
+            logger.error(f"Error getting most used templates: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            logger.error(f"Error args: {e.args}")
+            # Import traceback for full stack trace
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            stats_data["most_used_templates"] = []
+        
+        # 8. Recent activity - Another potential problem area
+        logger.debug("Fetching recent activity...")
+        try:
+            # Check if we have any reports first
+            if total_reports > 0:
+                # Use joinedload to properly load the relationship
+                from sqlalchemy.orm import joinedload
+                
+                recent_reports_query = db.query(Report).options(
+                    joinedload(Report.created_by)
+                ).order_by(desc(Report.created_at)).limit(10)
+                
+                logger.debug(f"Recent reports query: {str(recent_reports_query)}")
+                recent_reports = recent_reports_query.all()
+                logger.info(f"Found {len(recent_reports)} recent reports")
+                
+                recent_activity = []
+                for i, report in enumerate(recent_reports):
+                    try:
+                        # Safely extract username
+                        created_by_username = None
+                        if hasattr(report, 'created_by') and report.created_by:
+                            created_by_username = report.created_by.username
+                        
+                        activity_item = {
+                            "report_id": report.id,
+                            "title": str(report.title),
+                            "type": str(report.report_type),
+                            "status": str(report.status),
+                            "created_at": report.created_at.isoformat(),
+                            "created_by": created_by_username
+                        }
+                        recent_activity.append(activity_item)
+                        logger.debug(f"Added activity item {i+1}: {activity_item}")
+                        
+                    except Exception as item_error:
+                        logger.error(f"Error processing report {report.id}: {str(item_error)}")
+                        # Skip this item and continue
+                        continue
+                
+                logger.info(f"Recent activity: {len(recent_activity)} items")
+            else:
+                logger.info("No reports found, using empty recent activity")
+                recent_activity = []
+            
+            stats_data["recent_activity"] = recent_activity
+            
+        except Exception as e:
+            logger.error(f"Error getting recent activity: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            stats_data["recent_activity"] = []
+        
+        # 9. Create and validate the response
+        logger.debug("Creating ReportStatsResponse...")
+        try:
+            response = ReportStatsResponse(
+                total_reports=stats_data["total_reports"],
+                reports_by_type=stats_data["reports_by_type"],
+                reports_by_status=stats_data["reports_by_status"],
+                reports_this_month=stats_data["reports_this_month"],
+                reports_this_week=stats_data["reports_this_week"],
+                avg_generation_time=stats_data["avg_generation_time"],
+                most_used_templates=stats_data["most_used_templates"],
+                recent_activity=stats_data["recent_activity"]
+            )
+            logger.info("Successfully created ReportStatsResponse")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error creating ReportStatsResponse: {str(e)}")
+            logger.error(f"Stats data: {stats_data}")
+            # Try to identify which field is causing the validation error
+            for field_name, field_value in stats_data.items():
+                try:
+                    logger.debug(f"Field {field_name}: {type(field_value)} = {field_value}")
+                except Exception as field_error:
+                    logger.error(f"Error logging field {field_name}: {str(field_error)}")
+            
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create response: {str(e)}"
+            )
     
-    return ReportStatsResponse(
-        total_reports=total_reports,
-        reports_by_type=reports_by_type,
-        reports_by_status=reports_by_status,
-        reports_this_month=reports_this_month,
-        reports_this_week=reports_this_week,
-        avg_generation_time=avg_gen_time,
-        most_used_templates=most_used_templates,
-        recent_activity=recent_activity
-    )
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in get_report_statistics: {str(e)}")
+        logger.error(f"Error type: {type(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve report statistics: {str(e)}"
+        )
 
 # ============================================================================
 # BULK OPERATIONS ENDPOINTS
